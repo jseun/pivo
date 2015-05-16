@@ -67,13 +67,13 @@ func (h Hub) Broadcast() chan []byte {
 	messages := make(chan []byte)
 	go func() {
 		defer close(messages)
-		h.lock.Lock()
 		for msg := range messages {
+			h.lock.Lock()
 			for _, port := range h.ports {
 				port <- msg
 			}
+			h.lock.Unlock()
 		}
-		h.lock.Unlock()
 	}()
 	return messages
 }
