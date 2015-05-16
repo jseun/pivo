@@ -64,10 +64,10 @@ func (c *conn) Reader(r io.Reader) error {
 			if err != nil || n != len(msg) {
 				return err
 			} else if n != len(msg) {
-				return gopivo.ErrReaderIsWastingData
+				return gopivo.ErrReaderShortRead
 			}
 		default:
-			return gopivo.ErrReaderMisunderstood
+			return gopivo.ErrReaderViolation
 		}
 	}
 }

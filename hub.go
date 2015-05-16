@@ -1,9 +1,9 @@
 package gopivo
 
 import (
-	"log"
 	"errors"
 	"io"
+	"sync"
 	"time"
 )
 const limitRatePerSecond = 1
@@ -11,12 +11,12 @@ const limitRateBurst = 10
 const joinMaxQueueSize = 1024
 
 var (
-//	ErrHubIsShuttingDown   = errors.New("hub is shutting down")
-//	ErrHubKillWentBad      = errors.New("error while shutting down")
-//	ErrNoSuchConnector     = errors.New("no such connector")
-	ErrReaderHasGoneAway   = errors.New("reader has gone away")
-	ErrReaderIsWastingData = errors.New("reader performed a short read")
-	ErrReaderMisunderstood = errors.New("reader received unknown data")
+	ErrHubIsDown         = errors.New("hub is shutting down")
+	ErrJoinQueueIsFull   = errors.New("join queue is full")
+	ErrNoSuchConnector   = errors.New("no such connector")
+	ErrReaderHasGoneAway = errors.New("reader has gone away")
+	ErrReaderShortRead   = errors.New("reader short read")
+	ErrReaderViolation   = errors.New("reader violation")
 )
 
 type Connector interface {
@@ -28,15 +28,10 @@ type Connector interface {
 type Hub struct {
 	Name      string
 	broadcast chan []byte
-	join      chan Pair
-	leave     chan Connector
+	lock      *sync.Mutex
 	ports     Port
+	queue     chan chan bool
 	throttle  chan time.Time
-}
-
-type Pair struct {
-	c Connector
-	w chan []byte
 }
 
 type Port map[Connector]chan []byte
@@ -45,63 +40,72 @@ func NewHub(name string) *Hub {
 	h := &Hub{
 		Name:      name,
 		broadcast: make(chan []byte),
-		join:      make(chan Pair, joinMaxQueueSize),
-		leave:     make(chan Connector),
+		lock:      &sync.Mutex{},
 		ports:     make(Port),
+		queue:     make(chan chan bool, joinMaxQueueSize),
 		throttle:  make(chan time.Time, limitRateBurst),
 	}
-
-	go func() {
-		for ns := range time.Tick(time.Second / limitRatePerSecond) {
-			h.throttle <- ns
-			log.Print(ns)
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case <-h.throttle:
-				for {
-					select {
-					case p := <-h.join:
-						log.Print("join")
-						h.ports[p.c] = p.w
-					default:
-					}
-				}
-			case m := <-h.broadcast:
-				for _, port := range h.ports {
-					port <- m
-				}
-			case c := <-h.leave:
-				if port, ok := h.ports[c]; ok {
-					c.Closer()
-					delete(h.ports, c)
-					close(port)
-				}
-			}
-		}
-	}()
-
+	go h.run()
 	return h
+}
+
+func (h Hub) run() {
+	go h.ticker(limitRatePerSecond)
+	for ok := range h.queue {
+		<-h.throttle
+		ok <- true
+	}
+}
+
+func (h Hub) ticker(rate time.Duration) {
+	for ns := range time.Tick(time.Second / rate) {
+		h.throttle <- ns
+	}
 }
 
 func (h Hub) Broadcast() chan []byte {
 	messages := make(chan []byte)
 	go func() {
 		defer close(messages)
+		h.lock.Lock()
 		for msg := range messages {
-			h.broadcast <- msg
+			for _, port := range h.ports {
+				port <- msg
+			}
 		}
+		h.lock.Unlock()
 	}()
 	return messages
 }
 
 func (h Hub) Join(c Connector, rw io.ReadWriter, buf []byte) error {
-	defer func() { h.leave <- c }()
-	h.join <- Pair{c, c.Writer(rw, buf)}
+	ok := make(chan bool)
+	select {
+	case h.queue <- ok:
+	default:
+		close(ok)
+		c.Closer()
+		return ErrJoinQueueIsFull
+	}
+	<-ok
+	close(ok)
+	h.lock.Lock()
+	h.ports[c] = c.Writer(rw, buf)
+	h.lock.Unlock()
+	defer h.Leave(c)
 	return c.Reader(rw)
+}
+
+func (h Hub) Leave(c Connector) error {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	if port, ok := h.ports[c]; ok {
+		c.Closer()
+		delete(h.ports, c)
+		close(port)
+		return nil
+	}
+	return ErrNoSuchConnector
 }
 
 /*
