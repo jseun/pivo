@@ -18,7 +18,7 @@ const (
 )
 
 var NormalClosure = websocket.CloseNormalClosure
-var InternalServerErr = websocket.CloseInternalServerErr
+var InternalServerError = websocket.CloseInternalServerErr
 
 var upgrader = &websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -44,13 +44,14 @@ func (c *conn) ping() error {
 	return c.write(websocket.PingMessage, []byte{})
 }
 
-func (c *conn) send(buf bytes.Buffer) (err error) {
+func (c *conn) send(buf *bytes.Buffer) (err error) {
 	c.ws.SetWriteDeadline(time.Now().Add(writeWaitTime))
-	if w, err := c.ws.NextWriter(t); err == nil {
-		_, err = buf.WriteTo(w)
-		return err
+	w, err := c.ws.NextWriter(websocket.TextMessage)
+	if err != nil {
+		return
 	}
-	return err
+	_, err = buf.WriteTo(w)
+	return
 }
 
 func (c *conn) write(t int, buf []byte) error {
