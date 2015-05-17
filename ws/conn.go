@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"sync"
@@ -15,6 +16,9 @@ const (
 	pingInterval  = (pongWaitTime * 9) / 10
 	writeWaitTime = 10 * time.Second
 )
+
+var NormalClosure = websocket.CloseNormalClosure
+var InternalServerErr = websocket.CloseInternalServerErr
 
 var upgrader = &websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -40,11 +44,25 @@ func (c *conn) ping() error {
 	return c.write(websocket.PingMessage, []byte{})
 }
 
+func (c *conn) send(buf bytes.Buffer) (err error) {
+	c.ws.SetWriteDeadline(time.Now().Add(writeWaitTime))
+	if w, err := c.ws.NextWriter(t); err == nil {
+		_, err = buf.WriteTo(w)
+		return err
+	}
+	return err
+}
+
+func (c *conn) write(t int, buf []byte) error {
+	c.ws.SetWriteDeadline(time.Now().Add(writeWaitTime))
+	return c.ws.WriteMessage(t, buf)
+}
+
 func (c *conn) Closer() error {
 	return nil
 }
 
-func (c *conn) Reader(r io.Reader) error {
+func (c *conn) Reader(r gopivo.Decoder) error {
 	defer c.ws.Close()
 	c.ws.SetReadDeadline(time.Now().Add(pongWaitTime))
 	c.ws.SetPongHandler(func(string) error {
@@ -60,11 +78,8 @@ func (c *conn) Reader(r io.Reader) error {
 		case err != nil:
 			return gopivo.ErrReaderHasGoneAway
 		case msgt == websocket.TextMessage:
-			n, err := r.Read(msg)
-			if err != nil || n != len(msg) {
+			if err := r.Decode(msg); err != nil {
 				return err
-			} else if n != len(msg) {
-				return gopivo.ErrReaderShortRead
 			}
 		default:
 			return gopivo.ErrReaderViolation
@@ -72,38 +87,42 @@ func (c *conn) Reader(r io.Reader) error {
 	}
 }
 
-func (c *conn) write(t int, buf []byte) error {
-	c.ws.SetWriteDeadline(time.Now().Add(writeWaitTime))
-	return c.ws.WriteMessage(t, buf)
-}
-
-func (c *conn) Writer(w io.Writer, initial []byte) chan []byte {
-	pipe := make(chan []byte)
-	ticker := time.NewTicker(pingInterval)
+func (c *conn) Writer(init []byte, every time.Duration) chan []byte {
+	buf := bytes.NewBuffer(init)
+	input := make(chan []byte)
+	pinger := time.NewTicker(pingInterval)
+	sender := time.NewTicker(every)
 	go func() {
-		defer func() { ticker.Stop(); c.ws.Close() }()
+		defer func() {
+			pinger.Stop()
+			sender.Stop()
+			c.ws.Close()
+		}()
 		for {
 			select {
-			case msg, ok := <-pipe:
+			case msg, ok := <-input:
 				if !ok {
-					c.close(websocket.CloseNormalClosure)
+					c.close(NormalClosure)
 					return
 				}
-
-				err := c.write(websocket.TextMessage, msg)
+				_, err := buf.Write(msg)
 				if err != nil {
+					c.close(InternalServerError)
 					return
 				}
-
-			case <-ticker.C:
+			case <-pinger.C:
 				if err := c.ping(); err != nil {
+					return
+				}
+			case <-sender.C:
+				if err := c.send(buf); err != nil {
 					return
 				}
 			}
 		}
 	}()
 
-	return pipe
+	return input
 }
 
 func NewConn(w http.ResponseWriter, r *http.Request, h http.Header) (*conn, error) {

@@ -2,13 +2,13 @@ package gopivo
 
 import (
 	"errors"
-	"io"
 	"sync"
 	"time"
 )
 const limitRatePerSecond = 1
 const limitRateBurst = 10
 const joinMaxQueueSize = 1024
+const sendInterval = time.Second / 10
 
 var (
 	ErrHubIsDown         = errors.New("hub is shutting down")
@@ -21,8 +21,12 @@ var (
 
 type Connector interface {
 	Closer() error
-	Reader(io.Reader) error
-	Writer(io.Writer, []byte) chan []byte
+	Reader(Decoder) error
+	Writer([]byte, time.Duration) chan []byte
+}
+
+type Decoder interface {
+	Decode(interface{}) error
 }
 
 type Hub struct {
@@ -78,7 +82,7 @@ func (h Hub) Broadcast() chan []byte {
 	return messages
 }
 
-func (h Hub) Join(c Connector, rw io.ReadWriter, buf []byte) error {
+func (h Hub) Join(c Connector, d Decoder, buf []byte) error {
 	ok := make(chan bool)
 	select {
 	case h.queue <- ok:
@@ -90,10 +94,10 @@ func (h Hub) Join(c Connector, rw io.ReadWriter, buf []byte) error {
 	<-ok
 	close(ok)
 	h.lock.Lock()
-	h.ports[c] = c.Writer(rw, buf)
+	h.ports[c] = c.Writer(buf, sendInterval)
 	h.lock.Unlock()
 	defer h.Leave(c)
-	return c.Reader(rw)
+	return c.Reader(d)
 }
 
 func (h Hub) Leave(c Connector) error {
