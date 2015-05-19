@@ -1,8 +1,10 @@
 package ws
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -10,11 +12,13 @@ import (
 )
 
 const (
-	defaultBacklogSize = 1024
+	defaultBacklogSize = 10
 	defaultPingTimeout = 60 * time.Second
 
 	writeWaitTime = 10 * time.Second
 )
+
+var ErrWSClientHasGoneAway = errors.New("websocket has gone away")
 
 var upgrader = &websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -30,14 +34,9 @@ type conn struct {
 
 	pingTimeout time.Duration
 
-	ws *websocket.Conn
-}
-
-func (c *conn) Closer(err error) error {
-	defer c.ws.Close()
-	code := websocket.CloseNormalClosure
-	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
-	return c.write(websocket.CloseMessage, msg)
+	err   error
+	leave chan []byte
+	ws    *websocket.Conn
 }
 
 func (c *conn) ping() error {
@@ -53,6 +52,18 @@ func (c *conn) write(t int, buf []byte) error {
 	return c.ws.WriteMessage(t, buf)
 }
 
+func (c *conn) Closer(err error) error {
+	defer func() { close(c.leave); close(c.output) }()
+	code := websocket.CloseNormalClosure
+	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
+	c.leave <- msg
+	return nil
+}
+
+func (c *conn) Error() error {
+	return c.err
+}
+
 func (c *conn) Initialize() (chan []byte, error) {
 	c.output = make(chan []byte, c.backlog)
 	c.ws.SetPongHandler(func(string) error {
@@ -62,8 +73,8 @@ func (c *conn) Initialize() (chan []byte, error) {
 	return c.output, nil
 }
 
-func (c *conn) Receiver(r io.Reader) error {
-	defer c.ws.Close()
+func (c *conn) Receiver(r io.ReadCloser) error {
+	defer func() { c.ws.Close(); r.Close() }()
 	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 	for {
 		msgt, msg, err := c.ws.ReadMessage()
@@ -71,33 +82,38 @@ func (c *conn) Receiver(r io.Reader) error {
 		case err == io.EOF:
 			return nil
 		case err != nil:
+			c.err = ErrWSClientHasGoneAway
 			return err
 		case msgt == websocket.TextMessage:
 			if _, err := r.Read(msg); err != nil {
+				c.err = err
 				return err
 			}
 		}
 	}
 }
 
+func (c *conn) RemoteAddr() net.Addr {
+	return c.ws.RemoteAddr()
+}
+
 func (c *conn) Sender() {
 	pingInterval := (c.pingTimeout * 9) / 10
 	pinger := time.NewTicker(pingInterval)
 	go func() {
-		defer func() { pinger.Stop(); c.ws.Close() }()
+		defer pinger.Stop()
 		for {
 			select {
-			case msg, ok := <-c.output:
-				if !ok {
-					c.Closer(nil)
-					return
-				}
+			case msg := <-c.leave:
+				c.write(websocket.CloseMessage, msg)
+				return
+			case msg := <-c.output:
 				if err := c.send(msg); err != nil {
-					return
+					c.ws.Close()
 				}
 			case <-pinger.C:
 				if err := c.ping(); err != nil {
-					return
+					c.ws.Close()
 				}
 			}
 		}
@@ -111,6 +127,7 @@ func NewConn(w http.ResponseWriter, r *http.Request, h http.Header) (*conn, erro
 	}
 	c := &conn{
 		backlog:     defaultBacklogSize,
+		leave:       make(chan []byte),
 		pingTimeout: defaultPingTimeout,
 		ws:          ws,
 	}

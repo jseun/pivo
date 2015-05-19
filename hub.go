@@ -3,6 +3,7 @@ package gopivo
 import (
 	"errors"
 	"io"
+	"net"
 	"sync"
 	"time"
 )
@@ -12,16 +13,23 @@ const defaultJoinLimitRateBurst = 32
 const defaultJoinMaxQueueSize = 256
 
 var (
-	ErrJoinQueueIsFull     = errors.New("join queue is full")
-	ErrNoSuchConnector     = errors.New("no such connector")
-	ErrReceiverHasGoneAway = errors.New("receiver has gone away")
+	ErrJoinQueueIsFull  = errors.New("join queue is full")
+	ErrNoSuchConnector  = errors.New("no such connector")
+	ErrPortBufferIsFull = errors.New("port buffer is full")
 )
 
 type Connector interface {
-	Closer(error) error
+	Error() error
 	Initialize() (chan []byte, error)
-	Receiver(io.Reader) error
+	RemoteAddr() net.Addr
+
+	Closer(error) error
+	Receiver(io.ReadCloser) error
 	Sender()
+}
+
+type Welcomer interface {
+	Welcome() ([]byte, error)
 }
 
 type Hub struct {
@@ -83,7 +91,8 @@ func (h Hub) Broadcast() chan []byte {
 				select {
 				case port <- msg:
 				default:
-					go h.Leave(c)
+					err := ErrPortBufferIsFull
+					go h.Leave(c, err)
 				}
 			}
 			h.lock.Unlock()
@@ -92,7 +101,7 @@ func (h Hub) Broadcast() chan []byte {
 	return messages
 }
 
-func (h Hub) Join(c Connector, r io.Reader) error {
+func (h Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 	if err := h.waitQueue(); err != nil {
 		c.Closer(err)
 		return err
@@ -103,26 +112,30 @@ func (h Hub) Join(c Connector, r io.Reader) error {
 		c.Closer(err)
 		return err
 	}
+
 	go c.Sender()
+	if w != nil {
+		msg, err := w.Welcome()
+		if err != nil {
+			c.Closer(err)
+			return err
+		}
+		port <- msg
+	}
 
 	h.lock.Lock()
 	h.ports[c] = port
 	h.lock.Unlock()
-	defer h.Leave(c)
-
-	if err := c.Receiver(r); err != nil {
-		return ErrReceiverHasGoneAway
-	}
+	go func() { h.Leave(c, c.Receiver(r)) }()
 	return nil
 }
 
-func (h Hub) Leave(c Connector) error {
+func (h Hub) Leave(c Connector, reason error) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
-	if port, ok := h.ports[c]; ok {
+	if _, ok := h.ports[c]; ok {
 		delete(h.ports, c)
-		close(port)
-		return nil
+		return c.Closer(reason)
 	}
 	return ErrNoSuchConnector
 }
