@@ -1,24 +1,20 @@
 package ws
 
 import (
-	"bytes"
+	"fmt"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 
-	"github.com/jseun/gopivo"
 	"github.com/gorilla/websocket"
 )
 
 const (
-	pongWaitTime  = 60 * time.Second
-	pingInterval  = (pongWaitTime * 9) / 10
+	defaultBacklogSize = 1024
+	defaultPingTimeout = 60 * time.Second
+
 	writeWaitTime = 10 * time.Second
 )
-
-var NormalClosure = websocket.CloseNormalClosure
-var InternalServerError = websocket.CloseInternalServerErr
 
 var upgrader = &websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -29,29 +25,27 @@ var upgrader = &websocket.Upgrader{
 }
 
 type conn struct {
-	err  chan error
-	lock *sync.Mutex
-	ws   *websocket.Conn
+	backlog int
+	output  chan []byte
+
+	pingTimeout time.Duration
+
+	ws *websocket.Conn
 }
 
-func (c *conn) close(code int) (err error) {
-	msg := websocket.FormatCloseMessage(code, "")
-	err = c.write(websocket.CloseMessage, msg)
-	return
+func (c *conn) Closer(err error) error {
+	defer c.ws.Close()
+	code := websocket.CloseNormalClosure
+	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
+	return c.write(websocket.CloseMessage, msg)
 }
 
 func (c *conn) ping() error {
 	return c.write(websocket.PingMessage, []byte{})
 }
 
-func (c *conn) send(buf *bytes.Buffer) (err error) {
-	c.ws.SetWriteDeadline(time.Now().Add(writeWaitTime))
-	w, err := c.ws.NextWriter(websocket.TextMessage)
-	if err != nil {
-		return
-	}
-	_, err = buf.WriteTo(w)
-	return
+func (c *conn) send(buf []byte) (err error) {
+	return c.write(websocket.TextMessage, buf)
 }
 
 func (c *conn) write(t int, buf []byte) error {
@@ -59,71 +53,55 @@ func (c *conn) write(t int, buf []byte) error {
 	return c.ws.WriteMessage(t, buf)
 }
 
-func (c *conn) Closer() error {
-	return nil
-}
-
-func (c *conn) Reader(r gopivo.Decoder) error {
-	defer c.ws.Close()
-	c.ws.SetReadDeadline(time.Now().Add(pongWaitTime))
+func (c *conn) Initialize() (chan []byte, error) {
+	c.output = make(chan []byte, c.backlog)
 	c.ws.SetPongHandler(func(string) error {
-		c.ws.SetReadDeadline(time.Now().Add(pongWaitTime))
+		c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 		return nil
 	})
+	return c.output, nil
+}
 
+func (c *conn) Receiver(r io.Reader) error {
+	defer c.ws.Close()
+	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 	for {
 		msgt, msg, err := c.ws.ReadMessage()
 		switch {
 		case err == io.EOF:
 			return nil
 		case err != nil:
-			return gopivo.ErrReaderHasGoneAway
+			return err
 		case msgt == websocket.TextMessage:
-			if err := r.Decode(msg); err != nil {
+			if _, err := r.Read(msg); err != nil {
 				return err
 			}
-		default:
-			return gopivo.ErrReaderViolation
 		}
 	}
 }
 
-func (c *conn) Writer(init []byte, every time.Duration) chan []byte {
-	buf := bytes.NewBuffer(init)
-	input := make(chan []byte)
+func (c *conn) Sender() {
+	pingInterval := (c.pingTimeout * 9) / 10
 	pinger := time.NewTicker(pingInterval)
-	sender := time.NewTicker(every)
 	go func() {
-		defer func() {
-			pinger.Stop()
-			sender.Stop()
-			c.ws.Close()
-		}()
+		defer func() { pinger.Stop(); c.ws.Close() }()
 		for {
 			select {
-			case msg, ok := <-input:
+			case msg, ok := <-c.output:
 				if !ok {
-					c.close(NormalClosure)
+					c.Closer(nil)
 					return
 				}
-				_, err := buf.Write(msg)
-				if err != nil {
-					c.close(InternalServerError)
+				if err := c.send(msg); err != nil {
 					return
 				}
 			case <-pinger.C:
 				if err := c.ping(); err != nil {
 					return
 				}
-			case <-sender.C:
-				if err := c.send(buf); err != nil {
-					return
-				}
 			}
 		}
 	}()
-
-	return input
 }
 
 func NewConn(w http.ResponseWriter, r *http.Request, h http.Header) (*conn, error) {
@@ -131,6 +109,10 @@ func NewConn(w http.ResponseWriter, r *http.Request, h http.Header) (*conn, erro
 	if err != nil {
 		return nil, err
 	}
-	c := &conn{err: make(chan error), lock: &sync.Mutex{}, ws: ws}
+	c := &conn{
+		backlog:     defaultBacklogSize,
+		pingTimeout: defaultPingTimeout,
+		ws:          ws,
+	}
 	return c, nil
 }

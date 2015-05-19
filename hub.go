@@ -2,36 +2,29 @@ package gopivo
 
 import (
 	"errors"
+	"io"
 	"sync"
 	"time"
 )
-const limitRatePerSecond = 1
-const limitRateBurst = 10
-const joinMaxQueueSize = 1024
-const sendInterval = time.Second / 10
+const defaultJoinLimitRatePerSecond = 64
+const defaultJoinLimitRateBurst     = 32
+const defaultJoinMaxQueueSize       = 256
 
 var (
-	ErrHubIsDown         = errors.New("hub is shutting down")
-	ErrJoinQueueIsFull   = errors.New("join queue is full")
-	ErrNoSuchConnector   = errors.New("no such connector")
-	ErrReaderHasGoneAway = errors.New("reader has gone away")
-	ErrReaderShortRead   = errors.New("reader short read")
-	ErrReaderViolation   = errors.New("reader violation")
+	ErrJoinQueueIsFull     = errors.New("join queue is full")
+	ErrNoSuchConnector     = errors.New("no such connector")
+	ErrReceiverHasGoneAway = errors.New("receiver has gone away")
 )
 
 type Connector interface {
-	Closer() error
-	Reader(Decoder) error
-	Writer([]byte, time.Duration) chan []byte
-}
-
-type Decoder interface {
-	Decode(interface{}) error
+	Closer(error) error
+	Initialize() (chan []byte, error)
+	Receiver(io.Reader) error
+	Sender()
 }
 
 type Hub struct {
 	Name      string
-	broadcast chan []byte
 	lock      *sync.Mutex
 	ports     Port
 	queue     chan chan bool
@@ -43,21 +36,20 @@ type Port map[Connector]chan []byte
 func NewHub(name string) *Hub {
 	h := &Hub{
 		Name:      name,
-		broadcast: make(chan []byte),
 		lock:      &sync.Mutex{},
 		ports:     make(Port),
-		queue:     make(chan chan bool, joinMaxQueueSize),
-		throttle:  make(chan time.Time, limitRateBurst),
+		queue:     make(chan chan bool, defaultJoinMaxQueueSize),
+		throttle:  make(chan time.Time, defaultJoinLimitRateBurst),
 	}
 	go h.run()
 	return h
 }
 
 func (h Hub) run() {
-	go h.ticker(limitRatePerSecond)
-	for ok := range h.queue {
+	go h.ticker(defaultJoinLimitRatePerSecond)
+	for waiter := range h.queue {
 		<-h.throttle
-		ok <- true
+		waiter <- true
 	}
 }
 
@@ -67,14 +59,31 @@ func (h Hub) ticker(rate time.Duration) {
 	}
 }
 
+func (h Hub) waitQueue() error {
+	waiter := make(chan bool)
+	defer close(waiter)
+
+	select {
+	case h.queue <- waiter:
+	default:
+		return ErrJoinQueueIsFull
+	}
+	<-waiter
+	return nil
+}
+
 func (h Hub) Broadcast() chan []byte {
 	messages := make(chan []byte)
 	go func() {
 		defer close(messages)
 		for msg := range messages {
 			h.lock.Lock()
-			for _, port := range h.ports {
-				port <- msg
+			for c, port := range h.ports {
+				select {
+				case port <- msg:
+				default:
+					go h.Leave(c)
+				}
 			}
 			h.lock.Unlock()
 		}
@@ -82,29 +91,34 @@ func (h Hub) Broadcast() chan []byte {
 	return messages
 }
 
-func (h Hub) Join(c Connector, d Decoder, buf []byte) error {
-	ok := make(chan bool)
-	select {
-	case h.queue <- ok:
-	default:
-		close(ok)
-		c.Closer()
-		return ErrJoinQueueIsFull
+func (h Hub) Join(c Connector, r io.Reader) error {
+	if err := h.waitQueue(); err != nil {
+		c.Closer(err)
+		return err
 	}
-	<-ok
-	close(ok)
+
+	port, err := c.Initialize()
+	if err != nil {
+		c.Closer(err)
+		return err
+	}
+	go c.Sender()
+
 	h.lock.Lock()
-	h.ports[c] = c.Writer(buf, sendInterval)
+	h.ports[c] = port
 	h.lock.Unlock()
 	defer h.Leave(c)
-	return c.Reader(d)
+
+	if err := c.Receiver(r); err != nil {
+		return ErrReceiverHasGoneAway
+	}
+	return nil
 }
 
 func (h Hub) Leave(c Connector) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	if port, ok := h.ports[c]; ok {
-		c.Closer()
 		delete(h.ports, c)
 		close(port)
 		return nil
