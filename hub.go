@@ -33,7 +33,6 @@ type Welcomer interface {
 }
 
 type Hub struct {
-	Name     string
 	lock     *sync.Mutex
 	ports    Port
 	queue    chan chan bool
@@ -42,9 +41,8 @@ type Hub struct {
 
 type Port map[Connector]chan []byte
 
-func NewHub(name string) *Hub {
+func NewHub() *Hub {
 	h := &Hub{
-		Name:     name,
 		lock:     &sync.Mutex{},
 		ports:    make(Port),
 		queue:    make(chan chan bool, defaultJoinMaxQueueSize),
