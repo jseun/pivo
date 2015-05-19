@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 )
+
 const defaultJoinLimitRatePerSecond = 64
-const defaultJoinLimitRateBurst     = 32
-const defaultJoinMaxQueueSize       = 256
+const defaultJoinLimitRateBurst = 32
+const defaultJoinMaxQueueSize = 256
 
 var (
 	ErrJoinQueueIsFull     = errors.New("join queue is full")
@@ -24,22 +25,22 @@ type Connector interface {
 }
 
 type Hub struct {
-	Name      string
-	lock      *sync.Mutex
-	ports     Port
-	queue     chan chan bool
-	throttle  chan time.Time
+	Name     string
+	lock     *sync.Mutex
+	ports    Port
+	queue    chan chan bool
+	throttle chan time.Time
 }
 
 type Port map[Connector]chan []byte
 
 func NewHub(name string) *Hub {
 	h := &Hub{
-		Name:      name,
-		lock:      &sync.Mutex{},
-		ports:     make(Port),
-		queue:     make(chan chan bool, defaultJoinMaxQueueSize),
-		throttle:  make(chan time.Time, defaultJoinLimitRateBurst),
+		Name:     name,
+		lock:     &sync.Mutex{},
+		ports:    make(Port),
+		queue:    make(chan chan bool, defaultJoinMaxQueueSize),
+		throttle: make(chan time.Time, defaultJoinLimitRateBurst),
 	}
 	go h.run()
 	return h
