@@ -119,8 +119,9 @@ func (h Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 		if err != nil {
 			c.Closer(err)
 			return err
+		} else if len(msg) > 0 {
+			port <- msg
 		}
-		port <- msg
 	}
 
 	h.lock.Lock()
