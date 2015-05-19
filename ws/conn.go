@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultBacklogSize = 10
+	defaultBacklogSize = 64
 	defaultPingTimeout = 60 * time.Second
 
 	writeWaitTime = 10 * time.Second
