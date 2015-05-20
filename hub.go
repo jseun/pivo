@@ -32,6 +32,10 @@ type Welcomer interface {
 	Welcome() ([]byte, error)
 }
 
+type Broadcast struct {
+	C chan []byte
+}
+
 type Hub struct {
 	lock     *sync.Mutex
 	ports    Port
@@ -52,7 +56,26 @@ func NewHub() *Hub {
 	return h
 }
 
-func (h Hub) run() {
+func (b *Broadcast) broadcast(h *Hub) {
+	for msg := range b.C {
+		h.lock.Lock()
+		for c, port := range h.ports {
+			select {
+			case port <- msg:
+			default:
+				err := ErrPortBufferIsFull
+				go h.Leave(c, err)
+			}
+		}
+		h.lock.Unlock()
+	}
+}
+
+func (b *Broadcast) Close() {
+	close(b.C)
+}
+
+func (h *Hub) run() {
 	go h.ticker(defaultJoinLimitRatePerSecond)
 	for waiter := range h.queue {
 		<-h.throttle
@@ -60,13 +83,13 @@ func (h Hub) run() {
 	}
 }
 
-func (h Hub) ticker(rate time.Duration) {
+func (h *Hub) ticker(rate time.Duration) {
 	for ns := range time.Tick(time.Second / rate) {
 		h.throttle <- ns
 	}
 }
 
-func (h Hub) waitQueue() error {
+func (h *Hub) waitQueue() error {
 	waiter := make(chan bool)
 	defer close(waiter)
 
@@ -79,27 +102,13 @@ func (h Hub) waitQueue() error {
 	return nil
 }
 
-func (h Hub) Broadcast() chan []byte {
-	messages := make(chan []byte)
-	go func() {
-		defer close(messages)
-		for msg := range messages {
-			h.lock.Lock()
-			for c, port := range h.ports {
-				select {
-				case port <- msg:
-				default:
-					err := ErrPortBufferIsFull
-					go h.Leave(c, err)
-				}
-			}
-			h.lock.Unlock()
-		}
-	}()
-	return messages
+func (h *Hub) NewBroadcast() *Broadcast {
+	bc := &Broadcast{C: make(chan []byte)}
+	go bc.broadcast(h)
+	return bc
 }
 
-func (h Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
+func (h *Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 	if err := h.waitQueue(); err != nil {
 		c.Closer(err)
 		return err
@@ -129,7 +138,7 @@ func (h Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 	return nil
 }
 
-func (h Hub) Leave(c Connector, reason error) error {
+func (h *Hub) Leave(c Connector, reason error) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	if _, ok := h.ports[c]; ok {
