@@ -13,6 +13,7 @@ const defaultJoinLimitRateBurst = 32
 const defaultJoinMaxQueueSize = 256
 
 var (
+	ErrHubKillWentBad   = errors.New("killing hub raised errors")
 	ErrJoinQueueIsFull  = errors.New("join queue is full")
 	ErrNoSuchConnector  = errors.New("no such connector")
 	ErrPortBufferIsFull = errors.New("port buffer is full")
@@ -138,22 +139,12 @@ func (h *Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 	return nil
 }
 
-func (h *Hub) Leave(c Connector, reason error) error {
+func (h Hub) Kill(reason error) (error, []error) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
-	if _, ok := h.ports[c]; ok {
-		delete(h.ports, c)
-		return c.Closer(reason)
-	}
-	return ErrNoSuchConnector
-}
-
-/*
-func (h Hub) Kill() (error, []error) {
-	atomic.AddUint32(&h.state, 1)
 	var errors []error
-	for conn, _ := range h.ports {
-		if err := conn.Closer(); err != nil {
+	for c, _ := range h.ports {
+		if err := c.Closer(reason); err != nil {
 			errors = append(errors, err)
 		}
 	}
@@ -163,4 +154,13 @@ func (h Hub) Kill() (error, []error) {
 	}
 	return nil, nil
 }
-*/
+
+func (h *Hub) Leave(c Connector, reason error) error {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	if _, ok := h.ports[c]; ok {
+		delete(h.ports, c)
+		return c.Closer(reason)
+	}
+	return ErrNoSuchConnector
+}

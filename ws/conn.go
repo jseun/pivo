@@ -34,9 +34,10 @@ type conn struct {
 
 	pingTimeout time.Duration
 
-	err   error
-	leave chan []byte
-	ws    *websocket.Conn
+	err      error
+	isClosed bool
+	leave    chan []byte
+	ws       *websocket.Conn
 }
 
 func (c *conn) ping() error {
@@ -53,10 +54,15 @@ func (c *conn) write(t int, buf []byte) error {
 }
 
 func (c *conn) Closer(err error) error {
-	defer func() { close(c.leave); close(c.output) }()
+	if c.isClosed {
+		return nil
+	}
 	code := websocket.CloseNormalClosure
 	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
 	c.leave <- msg
+	c.isClosed = true
+	close(c.leave)
+	close(c.output)
 	return nil
 }
 
@@ -127,6 +133,7 @@ func NewConn(w http.ResponseWriter, r *http.Request, h http.Header) (*conn, erro
 	}
 	c := &conn{
 		backlog:     defaultBacklogSize,
+		isClosed:    false,
 		leave:       make(chan []byte),
 		pingTimeout: defaultPingTimeout,
 		ws:          ws,
