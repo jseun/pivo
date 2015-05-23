@@ -1,15 +1,27 @@
 # GoPivo
 
 *Hub of sockets written in Go*
-[![API Reference](https://godoc.org/github.com/jseun/gopivo?status.svg)](https://godoc.org/github.com/jseun/gopivo)
 
 ## Getting started
+
+### Documentation
+
+ * [API Reference](https://godoc.org/github.com/jseun/gopivo)
+
+### Installation
 
 Install the GoPivo library using the following `go` command.
 ```
 $ go get github.com/jseun/gopivo
 ```
 
+#### Dependencies
+
+GoPivo has the following dependency for the websocket connector.
+
+ * [Gorilla Websocket](https://github.com/gorilla/websocket)
+
 ## License
 
-This code is released under the `Simplified BSD License`. See the `LICENSE` file.
+Use of this source code is governed by a Simplified BSD license
+that can be found in the LICENSE file.
