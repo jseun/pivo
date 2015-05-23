@@ -153,7 +153,7 @@ func (h *Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 	return nil
 }
 
-func (h Hub) Kill(reason error) (error, []error) {
+func (h *Hub) Kill(reason error) (error, []error) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	var errors []error
