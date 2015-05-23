@@ -2,6 +2,8 @@
 // Use of this source code is governed by a Simplified BSD
 // license that can be found in the LICENSE file.
 
+// Package gopivo provides the base implementation for a hub
+// of sockets.
 package gopivo
 
 import (
@@ -23,6 +25,8 @@ var (
 	ErrPortBufferIsFull = errors.New("port buffer is full")
 )
 
+// Connector is the interface that wraps the basic methods needed
+// to send and receive the messages to and from a socket.
 type Connector interface {
 	Error() error
 	Initialize() (chan []byte, error)
@@ -33,14 +37,20 @@ type Connector interface {
 	Sender()
 }
 
+// Welcomer is the interface that wraps the method used to
+// provide the initial messages to send to the connector
+// on a successful join to the hub.
 type Welcomer interface {
 	Welcome() ([]byte, error)
 }
 
+// A Broadcast represents a channel for sending messages
+// to all instance of connectors on the hub.
 type Broadcast struct {
 	C chan []byte
 }
 
+// A Hub is a collection of Connectors.
 type Hub struct {
 	lock     *sync.Mutex
 	ports    Port
