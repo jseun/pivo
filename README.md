@@ -1,10 +1,14 @@
 # GoPivo
 
 *Hub of sockets written in Go*
+[![API Reference](https://godoc.org/github.com/jseun/gopivo?status.svg)](https://godoc.org/github.com/jseun/gopivo)
 
-## Documentation
+## Getting started
 
- * [![API Reference](https://godoc.org/github.com/jseun/gopivo?status.svg)](https://godoc.org/github.com/jseun/gopivo)
+Install the GoPivo library using the following `go` command.
+```
+$ go get github.com/jseun/gopivo
+```
 
 ## License
 
