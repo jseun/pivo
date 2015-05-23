@@ -157,7 +157,7 @@ func (h Hub) Kill(reason error) (error, []error) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	var errors []error
-	for c, _ := range h.ports {
+	for c := range h.ports {
 		if err := c.Closer(reason); err != nil {
 			errors = append(errors, err)
 		}
