@@ -2,8 +2,9 @@
 
 *Hub of sockets written in Go*
 
-## Getting started
-...
+## Documentation
+
+ * [![API Reference](https://godoc.org/github.com/jseun/gopivo?status.svg)](https://godoc.org/github.com/jseun/gopivo)
 
 ## License
 
