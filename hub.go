@@ -53,17 +53,17 @@ type Broadcast struct {
 // A Hub is a collection of Connectors.
 type Hub struct {
 	lock     *sync.Mutex
-	ports    Port
+	ports    ports
 	queue    chan chan bool
 	throttle chan time.Time
 }
 
-type Port map[Connector]chan []byte
+type ports map[Connector]chan []byte
 
 func NewHub() *Hub {
 	h := &Hub{
 		lock:     &sync.Mutex{},
-		ports:    make(Port),
+		ports:    make(ports),
 		queue:    make(chan chan bool, defaultJoinMaxQueueSize),
 		throttle: make(chan time.Time, defaultJoinLimitRateBurst),
 	}
