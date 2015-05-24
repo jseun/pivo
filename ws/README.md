@@ -17,10 +17,10 @@ $ go get github.com/jseun/gopivo
 
 #### Dependencies
 
-The GoPivo/websocket connector has the following dependency.
-
- * [Gorilla Websocket](https://github.com/gorilla/websocket)
-
+The GoPivo/websocket connector depends on the [Gorilla Websocket](https://github.com/gorilla/websocket) library.
+```
+$ go get github.com/gorilla/websocket
+```
 ## License
 
 Use of this source code is governed by a Simplified BSD license
