@@ -22,7 +22,7 @@ const (
 	writeWaitTime = 10 * time.Second
 )
 
-var ErrWSClientHasGoneAway = errors.New("websocket has gone away")
+var ErrReceiverHasGoneAway = errors.New("receiver has gone away")
 
 var upgrader = &websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -32,7 +32,7 @@ var upgrader = &websocket.Upgrader{
 	},
 }
 
-type conn struct {
+type Conn struct {
 	backlog int
 	output  chan []byte
 
@@ -44,20 +44,30 @@ type conn struct {
 	ws       *websocket.Conn
 }
 
-func (c *conn) ping() error {
+func NewConn() *Conn {
+	return &Conn{
+		backlog:     defaultBacklogSize,
+		isClosed:    false,
+		leave:       make(chan []byte),
+		pingTimeout: defaultPingTimeout,
+		ws:          &websocket.Conn{},
+	}
+}
+
+func (c *Conn) ping() error {
 	return c.write(websocket.PingMessage, []byte{})
 }
 
-func (c *conn) send(buf []byte) (err error) {
+func (c *Conn) send(buf []byte) (err error) {
 	return c.write(websocket.TextMessage, buf)
 }
 
-func (c *conn) write(t int, buf []byte) error {
+func (c *Conn) write(t int, buf []byte) error {
 	c.ws.SetWriteDeadline(time.Now().Add(writeWaitTime))
 	return c.ws.WriteMessage(t, buf)
 }
 
-func (c *conn) Closer(err error) error {
+func (c *Conn) Closer(err error) error {
 	if c.isClosed {
 		return nil
 	}
@@ -70,29 +80,40 @@ func (c *conn) Closer(err error) error {
 	return nil
 }
 
-func (c *conn) Error() error {
+func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
+	var dialer = &websocket.Dialer{}
+	ws, r, err := dialer.Dial(url, h)
+	if err != nil {
+		return nil, r, err
+	}
+	c.ws = ws
+	return c, r, nil
+}
+
+func (c *Conn) Error() error {
 	return c.err
 }
 
-func (c *conn) Initialize() (chan []byte, error) {
+func (c *Conn) Initialize() (chan []byte, error) {
 	c.output = make(chan []byte, c.backlog)
+	return c.output, nil
+}
+
+func (c *Conn) Receiver(r io.ReadCloser) error {
+	defer func() { c.ws.Close(); r.Close() }()
+	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 	c.ws.SetPongHandler(func(string) error {
 		c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 		return nil
 	})
-	return c.output, nil
-}
 
-func (c *conn) Receiver(r io.ReadCloser) error {
-	defer func() { c.ws.Close(); r.Close() }()
-	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 	for {
 		msgt, msg, err := c.ws.ReadMessage()
 		switch {
 		case err == io.EOF:
 			return nil
 		case err != nil:
-			c.err = ErrWSClientHasGoneAway
+			c.err = ErrReceiverHasGoneAway
 			return err
 		case msgt == websocket.TextMessage:
 			if _, err := r.Read(msg); err != nil {
@@ -103,11 +124,11 @@ func (c *conn) Receiver(r io.ReadCloser) error {
 	}
 }
 
-func (c *conn) RemoteAddr() net.Addr {
+func (c *Conn) RemoteAddr() net.Addr {
 	return c.ws.RemoteAddr()
 }
 
-func (c *conn) Sender() {
+func (c *Conn) Sender() {
 	pingInterval := (c.pingTimeout * 9) / 10
 	pinger := time.NewTicker(pingInterval)
 	go func() {
@@ -130,17 +151,11 @@ func (c *conn) Sender() {
 	}()
 }
 
-func NewConn(w http.ResponseWriter, r *http.Request, h http.Header) (*conn, error) {
+func (c *Conn) Upgrade(w http.ResponseWriter, r *http.Request, h http.Header) error {
 	ws, err := upgrader.Upgrade(w, r, h)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	c := &conn{
-		backlog:     defaultBacklogSize,
-		isClosed:    false,
-		leave:       make(chan []byte),
-		pingTimeout: defaultPingTimeout,
-		ws:          ws,
-	}
-	return c, nil
+	c.ws = ws
+	return nil
 }
