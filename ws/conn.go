@@ -94,11 +94,6 @@ func (c *Conn) Error() error {
 	return c.err
 }
 
-func (c *Conn) Initialize() (chan []byte, error) {
-	c.output = make(chan []byte, c.backlog)
-	return c.output, nil
-}
-
 func (c *Conn) Receiver(r io.ReadCloser) error {
 	defer func() { c.ws.Close(); r.Close() }()
 	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
@@ -128,7 +123,8 @@ func (c *Conn) RemoteAddr() net.Addr {
 	return c.ws.RemoteAddr()
 }
 
-func (c *Conn) Sender() {
+func (c *Conn) Sender() chan []byte {
+	c.output = make(chan []byte, c.backlog)
 	pingInterval := (c.pingTimeout * 9) / 10
 	pinger := time.NewTicker(pingInterval)
 	go func() {
@@ -149,6 +145,7 @@ func (c *Conn) Sender() {
 			}
 		}
 	}()
+	return c.output
 }
 
 func (c *Conn) Upgrade(w http.ResponseWriter, r *http.Request, h http.Header) error {

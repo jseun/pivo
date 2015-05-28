@@ -31,12 +31,11 @@ var (
 // to send and receive the messages to and from a socket.
 type Connector interface {
 	Error() error
-	Initialize() (chan []byte, error)
 	RemoteAddr() net.Addr
 
 	Closer(error) error
 	Receiver(io.ReadCloser) error
-	Sender()
+	Sender() chan []byte
 }
 
 // Welcomer is the interface that wraps the method used to
@@ -168,13 +167,7 @@ func (h *Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 		return err
 	}
 
-	port, err := c.Initialize()
-	if err != nil {
-		c.Closer(err)
-		return err
-	}
-
-	go c.Sender()
+	port := c.Sender()
 	if w != nil {
 		msg, err := w.Welcome()
 		if err != nil {
