@@ -8,7 +8,6 @@ package gopivo
 
 import (
 	"errors"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -30,12 +29,24 @@ var (
 // Connector is the interface that wraps the basic methods needed
 // to send and receive the messages to and from a socket.
 type Connector interface {
-	Error() error
+	Close(error) error
+	Receiver(OnReadCloser) error
 	RemoteAddr() net.Addr
-
-	Closer(error) error
-	Receiver(io.ReadCloser) error
 	Sender() chan []byte
+}
+
+type OnCloser interface {
+	OnClose(error) error
+}
+
+type OnReader interface {
+	OnReadBinary([]byte) error
+	OnReadText([]byte) error
+}
+
+type OnReadCloser interface {
+	OnCloser
+	OnReader
 }
 
 // Welcomer is the interface that wraps the method used to
@@ -150,7 +161,7 @@ func (h *Hub) Flush(reason error) (error, []error) {
 	defer h.lock.Unlock()
 	var errors []error
 	for c := range h.ports {
-		if err := c.Closer(reason); err != nil {
+		if err := c.Close(reason); err != nil {
 			errors = append(errors, err)
 		}
 	}
@@ -161,9 +172,9 @@ func (h *Hub) Flush(reason error) (error, []error) {
 	return nil, nil
 }
 
-func (h *Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
+func (h *Hub) Join(c Connector, rc OnReadCloser, w Welcomer) error {
 	if err := h.waitQueue(); err != nil {
-		c.Closer(err)
+		c.Close(err)
 		return err
 	}
 
@@ -171,7 +182,7 @@ func (h *Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 	if w != nil {
 		msg, err := w.Welcome()
 		if err != nil {
-			c.Closer(err)
+			c.Close(err)
 			return err
 		} else if len(msg) > 0 {
 			port <- msg
@@ -181,16 +192,17 @@ func (h *Hub) Join(c Connector, r io.ReadCloser, w Welcomer) error {
 	h.lock.Lock()
 	h.ports[c] = port
 	h.lock.Unlock()
-	go func() { h.Leave(c, c.Receiver(r)) }()
+	go func() { h.Leave(c, c.Receiver(rc)) }()
 	return nil
 }
 
 func (h *Hub) Leave(c Connector, reason error) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
-	if _, ok := h.ports[c]; ok {
+	if port, ok := h.ports[c]; ok {
 		delete(h.ports, c)
-		return c.Closer(reason)
+		close(port)
+		return c.Close(reason)
 	}
 	return ErrNoSuchConnector
 }

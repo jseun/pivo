@@ -5,13 +5,13 @@
 package ws
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"time"
 
+	"github.com/jseun/gopivo"
 	"github.com/gorilla/websocket"
 )
 
@@ -21,8 +21,6 @@ const (
 
 	writeWaitTime = 10 * time.Second
 )
-
-var ErrReceiverHasGoneAway = errors.New("receiver has gone away")
 
 var upgrader = &websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -34,21 +32,16 @@ var upgrader = &websocket.Upgrader{
 
 type Conn struct {
 	backlog int
-	output  chan []byte
+	port    chan []byte
 
 	pingTimeout time.Duration
 
-	err      error
-	isClosed bool
-	leave    chan []byte
-	ws       *websocket.Conn
+	ws *websocket.Conn
 }
 
 func NewConn() *Conn {
 	return &Conn{
 		backlog:     defaultBacklogSize,
-		isClosed:    false,
-		leave:       make(chan []byte),
 		pingTimeout: defaultPingTimeout,
 		ws:          &websocket.Conn{},
 	}
@@ -67,16 +60,11 @@ func (c *Conn) write(t int, buf []byte) error {
 	return c.ws.WriteMessage(t, buf)
 }
 
-func (c *Conn) Closer(err error) error {
-	if c.isClosed {
-		return nil
-	}
+func (c *Conn) Close(err error) error {
 	code := websocket.CloseNormalClosure
 	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
-	c.leave <- msg
-	c.isClosed = true
-	close(c.leave)
-	close(c.output)
+	c.write(websocket.CloseMessage, msg)
+	c.ws.Close()
 	return nil
 }
 
@@ -90,12 +78,8 @@ func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
 	return c, r, nil
 }
 
-func (c *Conn) Error() error {
-	return c.err
-}
-
-func (c *Conn) Receiver(r io.ReadCloser) error {
-	defer func() { c.ws.Close(); r.Close() }()
+func (c *Conn) Receiver(rc gopivo.OnReadCloser) error {
+	defer c.ws.Close()
 	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 	c.ws.SetPongHandler(func(string) error {
 		c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
@@ -103,17 +87,19 @@ func (c *Conn) Receiver(r io.ReadCloser) error {
 	})
 
 	for {
-		msgt, msg, err := c.ws.ReadMessage()
+		msgt, data, err := c.ws.ReadMessage()
 		switch {
 		case err == io.EOF:
-			return nil
+			return rc.OnClose(nil)
 		case err != nil:
-			c.err = ErrReceiverHasGoneAway
-			return err
+			return rc.OnClose(err)
+		case msgt == websocket.BinaryMessage:
+			if err := rc.OnReadBinary(data); err != nil {
+				return rc.OnClose(err)
+			}
 		case msgt == websocket.TextMessage:
-			if _, err := r.Read(msg); err != nil {
-				c.err = err
-				return err
+			if err := rc.OnReadText(data); err != nil {
+				return rc.OnClose(err)
 			}
 		}
 	}
@@ -124,28 +110,31 @@ func (c *Conn) RemoteAddr() net.Addr {
 }
 
 func (c *Conn) Sender() chan []byte {
-	c.output = make(chan []byte, c.backlog)
+	c.port = make(chan []byte, c.backlog)
 	pingInterval := (c.pingTimeout * 9) / 10
 	pinger := time.NewTicker(pingInterval)
 	go func() {
 		defer pinger.Stop()
 		for {
 			select {
-			case msg := <-c.leave:
-				c.write(websocket.CloseMessage, msg)
-				return
-			case msg := <-c.output:
+			case msg, ok := <-c.port:
+				if !ok {
+					return
+				}
+
 				if err := c.send(msg); err != nil {
 					c.ws.Close()
+					return
 				}
 			case <-pinger.C:
 				if err := c.ping(); err != nil {
 					c.ws.Close()
+					return
 				}
 			}
 		}
 	}()
-	return c.output
+	return c.port
 }
 
 func (c *Conn) Upgrade(w http.ResponseWriter, r *http.Request, h http.Header) error {
