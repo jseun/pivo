@@ -61,11 +61,11 @@ func (c *Conn) write(t int, buf []byte) error {
 }
 
 func (c *Conn) Close(err error) error {
+	defer c.ws.Close()
 	code := websocket.CloseNormalClosure
 	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
-	c.write(websocket.CloseMessage, msg)
-	c.ws.Close()
-	return nil
+	wait := time.Now().Add(writeWaitTime)
+	return c.ws.WriteControl(websocket.CloseMessage, msg, wait)
 }
 
 func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
