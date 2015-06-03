@@ -13,18 +13,31 @@ import (
 	"time"
 )
 
-const defaultJoinLimitRatePerSecond = 64
-const defaultJoinLimitRateBurst = 32
-const defaultJoinMaxQueueSize = 256
+// Default value for the join rate limit.
+// Currently defined as a maximum of 64 per seconds.
+const DefaultJoinLimitRateInterval = time.Second / 64
 
-var (
-	ErrHubFlushErrors   = errors.New("errors while flushing")
-	ErrHubIsNotRunning  = errors.New("hub is not running yet")
-	ErrHubIsRunning     = errors.New("hub is already running")
-	ErrJoinQueueIsFull  = errors.New("join queue is full")
-	ErrNoSuchConnector  = errors.New("no such connector")
-	ErrPortBufferIsFull = errors.New("port buffer is full")
-)
+// Default value for the allowed burst over the join limit.
+// Currently defined as a maximum of 32 more connections.
+const DefaultJoinLimitRateBurst = 32
+
+// Default value for the size of the join queue.
+// Currently defined as 256 pending connections before new
+// ones are discarded.
+const DefaultJoinMaxQueueSize = 256
+
+// Error is thrown when disconnecting the connectors from the
+// hub have raised some errors.
+var ErrHubFlushErrors = errors.New("errors while flushing")
+
+// Error is thrown when the join queue is full.
+var ErrJoinQueueIsFull = errors.New("join queue is full")
+
+// Error is thrown when a connection is not connected to the hub.
+var ErrNoSuchConnector = errors.New("no such connector")
+
+// Error is thrown when a connector has its port buffer full.
+var ErrPortBufferIsFull = errors.New("port buffer is full")
 
 // Connector is the interface that wraps the basic methods needed
 // to send and receive the messages to and from a socket.
@@ -35,15 +48,21 @@ type Connector interface {
 	Sender() chan []byte
 }
 
+// OnCloser is the interface that requires a method to call upon
+// disconnection of a connector.
 type OnCloser interface {
 	OnClose(error) error
 }
 
+// OnReader is the interface that wraps the methods called when
+// data is read from a connector.
 type OnReader interface {
 	OnReadBinary([]byte) error
 	OnReadText([]byte) error
 }
 
+// OnReadCloser wraps the basic methods needed to be notified
+// when data has been read or the connector has closed.
 type OnReadCloser interface {
 	OnCloser
 	OnReader
@@ -62,16 +81,29 @@ type Broadcast struct {
 	C chan []byte
 }
 
-// A Hub is a collection of Connectors.
+// A Hub is a collection of connectors with some specified settings.
 type Hub struct {
 	lock    *sync.Mutex
 	ports   ports
-	qburst  uint
-	qrate   time.Duration
-	qsize   uint
 	qslot   chan bool
 	queue   chan chan bool
 	running bool
+
+	// The interval at which new connections are processed.
+	// A Duration of time.Second / 100 would mean hundred
+	// of new connections are processed in a second.
+	JoinLimitRateInterval time.Duration
+
+	// The size of the burst allowed when the join limit
+	// interval is reached. A value of 10 would mean that
+	// 10 more new connections may stop waiting to join
+	// the hub,
+	JoinLimitRateBurst uint
+
+	// The maximum number of new connections waiting to
+	// join the hub before ErrJoinQueueIsFull is being
+	// returned.
+	JoinMaxQueueSize uint
 }
 
 type ports map[Connector]chan []byte
@@ -80,15 +112,15 @@ type throttler struct {
 	stop chan bool
 }
 
+// NewHub instantiate a new hub with default settings.
 func NewHub() *Hub {
-	h := &Hub{
-		lock:   &sync.Mutex{},
-		ports:  make(ports),
-		qburst: defaultJoinLimitRateBurst,
-		qsize:  defaultJoinMaxQueueSize,
+	return &Hub{
+		lock:                  &sync.Mutex{},
+		ports:                 make(ports),
+		JoinLimitRateBurst:    DefaultJoinLimitRateBurst,
+		JoinLimitRateInterval: DefaultJoinLimitRateInterval,
+		JoinMaxQueueSize:      DefaultJoinMaxQueueSize,
 	}
-	h.qrate = time.Second / defaultJoinLimitRatePerSecond
-	return h
 }
 
 func (b *Broadcast) broadcast(h *Hub) {
@@ -106,13 +138,15 @@ func (b *Broadcast) broadcast(h *Hub) {
 	}
 }
 
+// Close should be called when a broadcast channel is no longer
+// used.  Both the created channel and goroutine will be taken down.
 func (b *Broadcast) Close() {
 	close(b.C)
 }
 
 func (h *Hub) run() {
 	h.running = true
-	throttler := h.throttler(h.qrate)
+	throttler := h.throttler(h.JoinLimitRateInterval)
 	defer func() {
 		h.running = false
 		throttler.stop <- true
@@ -156,6 +190,8 @@ func (h *Hub) waitQueue() error {
 	return nil
 }
 
+// Flush disconnects all connectors from the hub without actually
+// stopping it.
 func (h *Hub) Flush(reason error) (error, []error) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
@@ -172,6 +208,18 @@ func (h *Hub) Flush(reason error) (error, []error) {
 	return nil, nil
 }
 
+// Join adds the given connector to the hub.  If a welcomer is
+// specified, it sends the provided data through the connector before
+// any broadcasted messages get delivered.
+//
+// The connector's goroutine for receiving and sending messages will
+// automatically be started and the given OnReadCloser will get
+// notified either if there is data available to read or if the
+// connector has been closed.
+//
+// The caller needs not to worry about disconnecting the connector
+// from the hub if remote has closed the connection.  This is done
+// and handled by default.
 func (h *Hub) Join(c Connector, rc OnReadCloser, w Welcomer) error {
 	if err := h.waitQueue(); err != nil {
 		c.Close(err)
@@ -196,6 +244,9 @@ func (h *Hub) Join(c Connector, rc OnReadCloser, w Welcomer) error {
 	return nil
 }
 
+// Leave disconnects the given connector from the hub.
+// If reason is not nil, the remote end shall receive the reason.
+// It is up to the connector to deliver the reason by its own mean.
 func (h *Hub) Leave(c Connector, reason error) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
@@ -207,26 +258,32 @@ func (h *Hub) Leave(c Connector, reason error) error {
 	return ErrNoSuchConnector
 }
 
+// NewBroadcast gives the caller a new broadcast channel
+// and kicks off the goroutine responsible for delivering
+// broadcasted message to the connectors currently connected.
 func (h *Hub) NewBroadcast() *Broadcast {
 	bc := &Broadcast{C: make(chan []byte)}
 	go bc.broadcast(h)
 	return bc
 }
 
+// Start instantiate the hub queues with current settings and
+// kicks off the goroutine responsible for throttling the join queue.
 func (h *Hub) Start() error {
-	if h.running {
-		return ErrHubIsRunning
+	if !h.running {
+		h.queue = make(chan chan bool, h.JoinMaxQueueSize)
+		h.qslot = make(chan bool, h.JoinLimitRateBurst)
+		go h.run()
 	}
-	h.queue = make(chan chan bool, h.qsize)
-	h.qslot = make(chan bool, h.qburst)
-	go h.run()
 	return nil
 }
 
+// Stop closes the join queue and disconnect all connectors from
+// the hub.  The throttling goroutine will also go down.
 func (h *Hub) Stop(reason error) (error, []error) {
-	if !h.running {
-		return ErrHubIsNotRunning, nil
+	if h.running {
+		close(h.queue)
+		return h.Flush(reason)
 	}
-	close(h.queue)
-	return h.Flush(reason)
+	return nil, nil
 }
