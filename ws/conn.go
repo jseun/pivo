@@ -61,7 +61,6 @@ func (c *Conn) write(t int, buf []byte) error {
 }
 
 func (c *Conn) Close(err error) error {
-	defer c.ws.Close()
 	code := websocket.CloseNormalClosure
 	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
 	wait := time.Now().Add(writeWaitTime)
