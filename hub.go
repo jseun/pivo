@@ -2,7 +2,7 @@
 // Use of this source code is governed by a Simplified BSD
 // license that can be found in the LICENSE file.
 
-// Package gopivo provides the base implementation for a hub
+// Package pivo provides the base implementation for a hub
 // of sockets.
 package pivo
 
@@ -12,6 +12,9 @@ import (
 	"sync"
 	"time"
 )
+
+// The Pivo package version numbers
+const Version = "0.99.9"
 
 // Default value for the join rate limit.
 // Currently defined as a maximum of 64 per seconds.

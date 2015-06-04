@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+
+	"gopkg.in/pivo.v1"
 )
 
-const banner = `GoPivo Echo Hub version 0.9 (c) The GoPivo Authors.`
+const banner = `Pivo Hub version %s (c) The Pivo Authors.`
 
 type welcomer struct {}
 
@@ -16,11 +18,11 @@ var (
 )
 
 func (w *welcomer) Welcome() ([]byte, error) {
-	return []byte(banner), nil
+	return []byte(fmt.Sprintf(banner, pivo.Version)), nil
 }
 
 func main() {
-	fmt.Println(banner)
+	fmt.Printf(banner, pivo.Version)
 	fmt.Println()
 	flag.Parse()
 

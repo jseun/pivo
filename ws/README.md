@@ -1,23 +1,23 @@
-# GoPivo/Websocket
+# Pivo/Websocket
 
-*Websocket connector for GoPivo*
+*Websocket connector for the Pivo package*
 
 ## Getting started
 
 ### Documentation
 
- * [API Reference](https://godoc.org/github.com/jseun/gopivo/ws)
+ * [API Reference](https://godoc.org/gopkg.in/pivo.v1/ws)
 
 ### Installation
 
-Install the GoPivo library using the following `go` command.
+Install the Pivo library using the following `go` command.
 ```
-$ go get github.com/jseun/gopivo
+$ go get gopkg.in/pivo.v1
 ```
 
 #### Dependencies
 
-The GoPivo/websocket connector depends on the [Gorilla Websocket](https://github.com/gorilla/websocket) library.
+The Pivo/Websocket connector depends on the [Gorilla Websocket](https://github.com/gorilla/websocket) library.
 ```
 $ go get github.com/gorilla/websocket
 ```
