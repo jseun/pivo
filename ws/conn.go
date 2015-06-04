@@ -2,7 +2,6 @@
 // Use of this source code is governed by a Simplified BSD
 // license that can be found in the LICENSE file.
 
-// Package ws implements the Pivo/Websocket connector.
 package ws
 
 import (
@@ -135,10 +134,11 @@ func (c *Conn) RemoteAddr() net.Addr {
 // and writing the bytes harvested through the socket. The goroutine
 // will run until one of the following conditions are met:
 //
-// 1. The returned channel has been closed
-// 2. An error occured writing on the socket
-// 3. A ping timeout occured.
+// Either the returned channel has been closed,
+// an error occured writing on the socket or
+// a ping timeout occured.
 //
+// Sender can only send TextMessage at this time.
 func (c *Conn) Sender() chan []byte {
 	c.port = make(chan []byte, c.PortBufferSize)
 	pingInterval := (9 * c.PingTimeout * time.Second) / 10
