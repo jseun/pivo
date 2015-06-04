@@ -115,8 +115,6 @@ type throttler struct {
 // NewHub instantiate a new hub with default settings.
 func NewHub() *Hub {
 	return &Hub{
-		lock:                  &sync.Mutex{},
-		ports:                 make(ports),
 		JoinLimitRateBurst:    DefaultJoinLimitRateBurst,
 		JoinLimitRateInterval: DefaultJoinLimitRateInterval,
 		JoinMaxQueueSize:      DefaultJoinMaxQueueSize,
@@ -271,6 +269,8 @@ func (h *Hub) NewBroadcast() *Broadcast {
 // kicks off the goroutine responsible for throttling the join queue.
 func (h *Hub) Start() error {
 	if !h.running {
+		h.lock = &sync.Mutex{}
+		h.ports = make(ports)
 		h.queue = make(chan chan bool, h.JoinMaxQueueSize)
 		h.qslot = make(chan bool, h.JoinLimitRateBurst)
 		go h.run()
