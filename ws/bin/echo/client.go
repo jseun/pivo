@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/jseun/gopivo/ws"
+	"gopkg.in/pivo.v1/ws"
 )
 
 var (

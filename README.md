@@ -1,23 +1,23 @@
-# GoPivo
+# Pivo's Hub of Sockets for Go
 
-*Hub of sockets written in Go*
+*Pivo is Go package for broadcasting messages through a virtual hub*
 
 ## Getting started
 
 ### Documentation
 
- * [API Reference](https://godoc.org/github.com/jseun/gopivo)
+ * [API Reference](https://godoc.org/gopkg.in/pivo.v1)
 
 ### Installation
 
-Install the GoPivo library using the following `go` command.
+Install the Pivo library using the following `go` command.
 ```
-$ go get github.com/jseun/gopivo
+$ go get gopkg.in/pivo.v1
 ```
 
 #### Dependencies
 
-GoPivo has the following dependency for the websocket connector.
+Pivo has the following dependency for the websocket connector.
 
  * [Gorilla Websocket](https://github.com/gorilla/websocket)
 

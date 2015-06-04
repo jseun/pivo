@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jseun/gopivo"
+	"gopkg.in/pivo.v1"
 )
 
 type Connector struct {
@@ -13,8 +13,8 @@ type Connector struct {
 }
 
 type Hub struct {
-	hub *gopivo.Hub
-	sub chan gopivo.Connector
+	hub *pivo.Hub
+	sub chan pivo.Connector
 }
 
 // Error is transmited when the hub is closing
@@ -25,12 +25,12 @@ var ErrProtocolViolation = errors.New("protocol violation")
 
 // Define a hub with custom settings
 var echo = &Hub{
-	hub: &gopivo.Hub{
+	hub: &pivo.Hub{
 		JoinLimitRateInterval: time.Second,
 		JoinLimitRateBurst: 8,
 		JoinMaxQueueSize: 16,
 	},
-	sub: make(chan gopivo.Connector),
+	sub: make(chan pivo.Connector),
 }
 
 func (c *Connector) OnClose(why error) error {
@@ -49,7 +49,7 @@ func (c *Connector) OnReadText(msg []byte) error {
 	return nil
 }
 
-func run(w gopivo.Welcomer) {
+func run(w pivo.Welcomer) {
 	echo.hub.Start()
 	go func() {
 		bc := echo.hub.NewBroadcast()

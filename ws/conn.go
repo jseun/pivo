@@ -1,4 +1,4 @@
-// Copyright 2015 The GoPivo Authors. All rights reserved.
+// Copyright 2015 The Pivo Authors. All rights reserved.
 // Use of this source code is governed by a Simplified BSD
 // license that can be found in the LICENSE file.
 
@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jseun/gopivo"
 	"github.com/gorilla/websocket"
+	"gopkg.in/pivo.v1"
 )
 
 const (
@@ -77,7 +77,7 @@ func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
 	return c, r, nil
 }
 
-func (c *Conn) Receiver(rc gopivo.OnReadCloser) error {
+func (c *Conn) Receiver(rc pivo.OnReadCloser) error {
 	defer c.ws.Close()
 	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
 	c.ws.SetPongHandler(func(string) error {

@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/jseun/gopivo/ws"
+	"gopkg.in/pivo.v1/ws"
 )
 
 const echoWebsocketUri = `/`
