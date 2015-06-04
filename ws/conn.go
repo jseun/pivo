@@ -2,6 +2,7 @@
 // Use of this source code is governed by a Simplified BSD
 // license that can be found in the LICENSE file.
 
+// Package ws implements the Pivo/Websocket connector.
 package ws
 
 import (
@@ -15,35 +16,51 @@ import (
 	"gopkg.in/pivo.v1"
 )
 
-const (
-	defaultBacklogSize = 64
-	defaultPingTimeout = 60 * time.Second
+// Default ping timeout value in seconds
+const DefaultPingTimeout = 60
 
-	writeWaitTime = 10 * time.Second
-)
+// Default port buffer size
+const DefaultPortBufferSize = 64
 
-var upgrader = &websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
+// Default read buffer size
+const DefaultReadBufferSize = 1024
 
+// Default write buffer size
+const DefaultWriteBufferSize = 1024
+
+// Default write timeout value in seconds
+const DefaultWriteTimeout = 10
+
+// Conn specifies parameters for this connector.
 type Conn struct {
-	backlog int
 	port    chan []byte
+	timeout time.Duration
+	ws      *websocket.Conn
 
-	pingTimeout time.Duration
+	// Ping timeout
+	PingTimeout time.Duration
 
-	ws *websocket.Conn
+	// Write timeout
+	WriteTimeout time.Duration
+
+	// Port buffer size
+	PortBufferSize int
+
+	// Those settings are only used by upgraders.
+	// See http://godoc.org/github.com/gorilla/websocket#Upgrader
+	CheckOrigin     func(*http.Request) bool
+	ReadBufferSize  int
+	WriteBufferSize int
 }
 
+// NewConn instantiate a connector with default settings.
 func NewConn() *Conn {
 	return &Conn{
-		backlog:     defaultBacklogSize,
-		pingTimeout: defaultPingTimeout,
-		ws:          &websocket.Conn{},
+		PingTimeout:     DefaultPingTimeout,
+		PortBufferSize:  DefaultPortBufferSize,
+		ReadBufferSize:  DefaultReadBufferSize,
+		WriteBufferSize: DefaultWriteBufferSize,
+		WriteTimeout:    DefaultWriteTimeout,
 	}
 }
 
@@ -56,17 +73,19 @@ func (c *Conn) send(buf []byte) (err error) {
 }
 
 func (c *Conn) write(t int, buf []byte) error {
-	c.ws.SetWriteDeadline(time.Now().Add(writeWaitTime))
+	c.ws.SetWriteDeadline(time.Now().Add(c.WriteTimeout * time.Second))
 	return c.ws.WriteMessage(t, buf)
 }
 
+// Close sends a closure message to the remote end.
 func (c *Conn) Close(err error) error {
 	code := websocket.CloseNormalClosure
 	msg := websocket.FormatCloseMessage(code, fmt.Sprint(err))
-	wait := time.Now().Add(writeWaitTime)
+	wait := time.Now().Add(c.WriteTimeout * time.Second)
 	return c.ws.WriteControl(websocket.CloseMessage, msg, wait)
 }
 
+// Dial opens a connection to the given URL with the provided header.
 func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
 	var dialer = &websocket.Dialer{}
 	ws, r, err := dialer.Dial(url, h)
@@ -77,11 +96,14 @@ func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
 	return c, r, nil
 }
 
+// Receiver is an event loop that either calls OnCloser if the connection
+// has terminated or OnReader when data has been read from the socket.
 func (c *Conn) Receiver(rc pivo.OnReadCloser) error {
 	defer c.ws.Close()
-	c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
+	timeout := c.PingTimeout * time.Second
+	c.ws.SetReadDeadline(time.Now().Add(timeout))
 	c.ws.SetPongHandler(func(string) error {
-		c.ws.SetReadDeadline(time.Now().Add(c.pingTimeout))
+		c.ws.SetReadDeadline(time.Now().Add(timeout))
 		return nil
 	})
 
@@ -104,13 +126,22 @@ func (c *Conn) Receiver(rc pivo.OnReadCloser) error {
 	}
 }
 
+// RemoteAddr returns the IP address of the remote end.
 func (c *Conn) RemoteAddr() net.Addr {
 	return c.ws.RemoteAddr()
 }
 
+// Sender kicks off a goroutine reading from the returned channel
+// and writing the bytes harvested through the socket. The goroutine
+// will run until one of the following conditions are met:
+//
+// 1. The returned channel has been closed
+// 2. An error occured writing on the socket
+// 3. A ping timeout occured.
+//
 func (c *Conn) Sender() chan []byte {
-	c.port = make(chan []byte, c.backlog)
-	pingInterval := (c.pingTimeout * 9) / 10
+	c.port = make(chan []byte, c.PortBufferSize)
+	pingInterval := (9 * c.PingTimeout * time.Second) / 10
 	pinger := time.NewTicker(pingInterval)
 	go func() {
 		defer pinger.Stop()
@@ -136,7 +167,14 @@ func (c *Conn) Sender() chan []byte {
 	return c.port
 }
 
+// Upgrade tries to upgrade an HTTP request to a Websocket session.
 func (c *Conn) Upgrade(w http.ResponseWriter, r *http.Request, h http.Header) error {
+	upgrader := &websocket.Upgrader{
+		CheckOrigin:     c.CheckOrigin,
+		ReadBufferSize:  c.ReadBufferSize,
+		WriteBufferSize: c.WriteBufferSize,
+	}
+
 	ws, err := upgrader.Upgrade(w, r, h)
 	if err != nil {
 		return err
