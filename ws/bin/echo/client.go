@@ -9,7 +9,8 @@ import (
 	"os/signal"
 	"time"
 
-	"gopkg.in/pivo.v1/ws"
+	"gopkg.in/pivo.v2"
+	"gopkg.in/pivo.v2/ws"
 )
 
 var (
@@ -23,13 +24,13 @@ func (r *reader) OnClose(err error) error {
 	return nil
 }
 
-func (r *reader) OnReadBinary(buf []byte) error {
+func (r *reader) OnBinaryRead(buf []byte) error {
 	return nil
 }
 
-func (r *reader) OnReadText(buf []byte) error {
+func (r *reader) OnTextRead(text string) error {
 	fmt.Println()
-	fmt.Println(string(buf))
+	fmt.Println(text)
 	fmt.Print("> ")
 	return nil
 }
@@ -40,11 +41,13 @@ func shutdown(c *ws.Conn) {
 	os.Exit(0)
 }
 
-func waitForUserInput(port chan []byte) {
+func waitForUserInput(port pivo.Port) {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		text, _ := reader.ReadString('\n')
-		port <-[]byte(text)[:len(text)-1]
+		// Remove trailing newline
+		msg := []byte(text)[:len(text)-1]
+		port <- pivo.TextMessage(string(msg))
 	}
 }
 
@@ -64,7 +67,8 @@ func main() {
 			go func() { <-sigint; shutdown(conn) }()
 			port := conn.Sender()
 			go func() {
-				err := conn.Receiver(&reader{})
+				r := &reader{}
+				err := conn.Receiver(r, r, r)
 				if err != nil {
 					log.Print(err)
 				}

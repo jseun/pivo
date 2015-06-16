@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	"gopkg.in/pivo.v1/ws"
+	"gopkg.in/pivo.v2/ws"
 )
 
 const echoWebsocketUri = `/`
@@ -16,7 +16,7 @@ func (echo *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r.RemoteAddr, err)
 		return
 	}
-	echo.sub <-conn
+	echo.sub <- conn
 }
 
 func init() {
