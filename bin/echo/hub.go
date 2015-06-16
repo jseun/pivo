@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"gopkg.in/pivo.v1"
+	"gopkg.in/pivo.v2"
 )
 
 type Connector struct {
-	pub chan []byte
+	pub pivo.Port
 }
 
 type Hub struct {
@@ -37,23 +37,24 @@ func (c *Connector) OnClose(why error) error {
 	return nil
 }
 
-func (c *Connector) OnReadBinary(data []byte) error {
+func (c *Connector) OnBinaryRead(data []byte) error {
 	// Binary transfer is not allowed here
 	return ErrProtocolViolation
 }
 
-func (c *Connector) OnReadText(msg []byte) error {
+func (c *Connector) OnTextRead(text string) error {
 	// Echo back the message to all connectors,
 	// including this one.
-	c.pub <-msg
+	c.pub <- pivo.TextMessage(text)
 	return nil
 }
 
-func run(w pivo.Welcomer) {
+func run(j pivo.OnJoiner) {
+	echo.hub.Joiner = j
 	echo.hub.Start()
 	go func() {
 		bc := echo.hub.NewBroadcast()
-		pub := make(chan []byte)
+		pub := make(pivo.Port)
 		defer func() {
 			echo.hub.Stop(ErrHubIsClosing)
 			bc.Close()
@@ -70,7 +71,7 @@ func run(w pivo.Welcomer) {
 					return
 				}
 				conn := &Connector{pub: pub}
-				err := echo.hub.Join(c, conn, w)
+				err := echo.hub.Join(c, conn)
 				if err != nil {
 					fmt.Printf("%s: %s",
 						c.RemoteAddr(), err)

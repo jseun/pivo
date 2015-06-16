@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"gopkg.in/pivo.v1"
+	"gopkg.in/pivo.v2"
 )
 
 // Default ping timeout value in seconds
@@ -32,7 +32,7 @@ const DefaultWriteTimeout = 10
 
 // Conn specifies parameters for this connector.
 type Conn struct {
-	port    chan []byte
+	port    pivo.Port
 	timeout time.Duration
 	ws      *websocket.Conn
 
@@ -67,8 +67,14 @@ func (c *Conn) ping() error {
 	return c.write(websocket.PingMessage, []byte{})
 }
 
-func (c *Conn) send(buf []byte) (err error) {
-	return c.write(websocket.TextMessage, buf)
+func (c *Conn) send(msg *pivo.Message) error {
+	switch msg.Type {
+	case pivo.IsBinaryMessage:
+		return c.write(websocket.BinaryMessage, msg.Data)
+	case pivo.IsTextMessage:
+		// Default is to send text message
+	}
+	return c.write(websocket.TextMessage, msg.Data)
 }
 
 func (c *Conn) write(t int, buf []byte) error {
@@ -97,7 +103,7 @@ func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
 
 // Receiver is an event loop that either calls OnCloser if the connection
 // has terminated or OnReader when data has been read from the socket.
-func (c *Conn) Receiver(rc pivo.OnReadCloser) error {
+func (c *Conn) Receiver(br pivo.OnBinaryReader, tr pivo.OnTextReader, oc pivo.OnCloser) error {
 	defer c.ws.Close()
 	timeout := c.PingTimeout * time.Second
 	c.ws.SetReadDeadline(time.Now().Add(timeout))
@@ -109,17 +115,41 @@ func (c *Conn) Receiver(rc pivo.OnReadCloser) error {
 	for {
 		msgt, data, err := c.ws.ReadMessage()
 		switch {
+
+		// Remote closed connection as expected
 		case err == io.EOF:
-			return rc.OnClose(nil)
-		case err != nil:
-			return rc.OnClose(err)
-		case msgt == websocket.BinaryMessage:
-			if err := rc.OnReadBinary(data); err != nil {
-				return rc.OnClose(err)
+			if oc != nil {
+				return oc.OnClose(nil)
 			}
+			return nil
+
+		// Remote closed connection unexpectedly
+		case err != nil:
+			if oc != nil {
+				return oc.OnClose(err)
+			}
+			return err
+
+		// Binary data has been read
+		case msgt == websocket.BinaryMessage:
+			if br != nil {
+				err := br.OnBinaryRead(data)
+				if err != nil && oc != nil {
+					return oc.OnClose(err)
+				} else if err != nil {
+					return err
+				}
+			}
+
+		// Text data has been read
 		case msgt == websocket.TextMessage:
-			if err := rc.OnReadText(data); err != nil {
-				return rc.OnClose(err)
+			if tr != nil {
+				err := tr.OnTextRead(string(data))
+				if err != nil && oc != nil {
+					return oc.OnClose(err)
+				} else if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -137,10 +167,8 @@ func (c *Conn) RemoteAddr() net.Addr {
 // Either the returned channel has been closed,
 // an error occured writing on the socket or
 // a ping timeout occured.
-//
-// Sender can only send TextMessage at this time.
-func (c *Conn) Sender() chan []byte {
-	c.port = make(chan []byte, c.PortBufferSize)
+func (c *Conn) Sender() pivo.Port {
+	c.port = make(pivo.Port, c.PortBufferSize)
 	pingInterval := (9 * c.PingTimeout * time.Second) / 10
 	pinger := time.NewTicker(pingInterval)
 	go func() {

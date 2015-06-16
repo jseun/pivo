@@ -6,19 +6,20 @@ import (
 	"net/http"
 	"os"
 
-	"gopkg.in/pivo.v1"
+	"gopkg.in/pivo.v2"
 )
 
 const banner = `Pivo Hub version %s (c) The Pivo Authors.`
 
-type welcomer struct {}
+type joiner struct {}
 
 var (
 	lHttp = flag.String("http", ":8000", "listen for http on")
 )
 
-func (w *welcomer) Welcome() ([]byte, error) {
-	return []byte(fmt.Sprintf(banner, pivo.Version)), nil
+func (j *joiner) OnJoin(c pivo.Connector, port pivo.Port) (*pivo.Message, error) {
+	port <- pivo.TextMessage(fmt.Sprintf(banner, pivo.Version))
+	return nil, nil
 }
 
 func main() {
@@ -27,7 +28,7 @@ func main() {
 	flag.Parse()
 
 	// Kick off the hub
-	run(&welcomer{})
+	run(&joiner{})
 
 	// Listen for HTTP connections to upgrade
 	if err := http.ListenAndServe(*lHttp, nil); err != nil {
