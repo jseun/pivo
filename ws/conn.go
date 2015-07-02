@@ -32,10 +32,6 @@ const DefaultWriteTimeout = 10
 
 // Conn specifies parameters for this connector.
 type Conn struct {
-	port    pivo.Port
-	timeout time.Duration
-	ws      *websocket.Conn
-
 	// Ping timeout
 	PingTimeout time.Duration
 
@@ -50,10 +46,14 @@ type Conn struct {
 	CheckOrigin     func(*http.Request) bool
 	ReadBufferSize  int
 	WriteBufferSize int
+
+	port    pivo.Port       // Messages to write to the socket
+	timeout time.Duration   // Ping timeout duration
+	ws      *websocket.Conn // Websocket connection
 }
 
-// NewConn instantiate a connector with default settings.
-func NewConn() *Conn {
+// DefaultConn instantiate a connector with default settings.
+func DefaultConn() *Conn {
 	return &Conn{
 		PingTimeout:     DefaultPingTimeout,
 		PortBufferSize:  DefaultPortBufferSize,
@@ -63,10 +63,12 @@ func NewConn() *Conn {
 	}
 }
 
+// ping writes a PingMessage to the socket.
 func (c *Conn) ping() error {
 	return c.write(websocket.PingMessage, []byte{})
 }
 
+// send writes either binary or text message to the socket.
 func (c *Conn) send(msg *pivo.Message) error {
 	switch msg.Type {
 	case pivo.IsBinaryMessage:
@@ -77,9 +79,15 @@ func (c *Conn) send(msg *pivo.Message) error {
 	return c.write(websocket.TextMessage, msg.Data)
 }
 
+// write writes to the socket and controls the write deadline.
 func (c *Conn) write(t int, buf []byte) error {
 	c.ws.SetWriteDeadline(time.Now().Add(c.WriteTimeout * time.Second))
 	return c.ws.WriteMessage(t, buf)
+}
+
+// BinaryMessage formats a binary message and returns a pointer to it.
+func (c *Conn) BinaryMessage(bin []byte) *pivo.Message {
+	return pivo.BinaryMessage(c, bin)
 }
 
 // Close sends a closure message to the remote end.
@@ -101,9 +109,18 @@ func (c *Conn) Dial(url string, h http.Header) (*Conn, *http.Response, error) {
 	return c, r, nil
 }
 
+// Protocol returns the name of the Pivo transport protocol used.
+func (c *Conn) Protocol() string {
+	return "websocket"
+}
+
 // Receiver is an event loop that either calls OnCloser if the connection
 // has terminated or OnReader when data has been read from the socket.
-func (c *Conn) Receiver(br pivo.OnBinaryReader, tr pivo.OnTextReader, oc pivo.OnCloser) error {
+// Reading data from the socket or keeping it alive will not work unless
+// that function is spinning in a goroutine.
+//
+// Receiver returns whatever error the OnCloser did return.
+func (c *Conn) Receiver(rc pivo.OnReadCloser) error {
 	defer c.ws.Close()
 	timeout := c.PingTimeout * time.Second
 	c.ws.SetReadDeadline(time.Now().Add(timeout))
@@ -118,41 +135,29 @@ func (c *Conn) Receiver(br pivo.OnBinaryReader, tr pivo.OnTextReader, oc pivo.On
 
 		// Remote closed connection as expected
 		case err == io.EOF:
-			if oc != nil {
-				return oc.OnClose(nil)
-			}
-			return nil
+			return rc.OnClose(nil)
 
 		// Remote closed connection unexpectedly
 		case err != nil:
-			if oc != nil {
-				return oc.OnClose(err)
-			}
-			return err
+			return rc.OnClose(err)
 
 		// Binary data has been read
 		case msgt == websocket.BinaryMessage:
-			if br != nil {
-				err := br.OnBinaryRead(data)
-				if err != nil && oc != nil {
-					return oc.OnClose(err)
-				} else if err != nil {
-					return err
-				}
+			err := rc.OnBinaryRead(data)
+			if err != nil {
+				return rc.OnClose(err)
 			}
 
 		// Text data has been read
 		case msgt == websocket.TextMessage:
-			if tr != nil {
-				err := tr.OnTextRead(string(data))
-				if err != nil && oc != nil {
-					return oc.OnClose(err)
-				} else if err != nil {
-					return err
-				}
+			err := rc.OnTextRead(string(data))
+			if err != nil {
+				return rc.OnClose(err)
 			}
+
 		}
 	}
+	return pivo.ErrShouldNotReachThis
 }
 
 // RemoteAddr returns the IP address of the remote end.
@@ -160,39 +165,50 @@ func (c *Conn) RemoteAddr() net.Addr {
 	return c.ws.RemoteAddr()
 }
 
-// Sender kicks off a goroutine reading from the returned channel
-// and writing the bytes harvested through the socket. The goroutine
-// will run until one of the following conditions are met:
-//
-// Either the returned channel has been closed,
-// an error occured writing on the socket or
-// a ping timeout occured.
-func (c *Conn) Sender() pivo.Port {
+// Send pushes the given message through the port buffer.
+// pivo.ErrPortBufferIsFull is thrown either if the port
+// buffer is not open or if it has reached it's buffer size.
+func (c *Conn) Send(m *pivo.Message) error {
+	select {
+	case c.port <- m:
+	default:
+		return pivo.ErrPortBufferIsFull
+	}
+	return nil
+}
+
+// Sender reads messages from the port buffer and write them
+// to the socket.  Sending data or keeping the socket open
+// will not be possible without spinning that function in a
+// goroutine.
+func (c *Conn) Sender() error {
 	c.port = make(pivo.Port, c.PortBufferSize)
 	pingInterval := (9 * c.PingTimeout * time.Second) / 10
 	pinger := time.NewTicker(pingInterval)
-	go func() {
-		defer pinger.Stop()
-		for {
-			select {
-			case msg, ok := <-c.port:
-				if !ok {
-					return
-				}
+	defer func() { pinger.Stop(); c.ws.Close() }()
+	for {
+		select {
 
-				if err := c.send(msg); err != nil {
-					c.ws.Close()
-					return
-				}
-			case <-pinger.C:
-				if err := c.ping(); err != nil {
-					c.ws.Close()
-					return
-				}
+		// Send
+		case msg := <-c.port:
+			if err := c.send(msg); err != nil {
+				return err
 			}
+
+		// Ping
+		case <-pinger.C:
+			if err := c.ping(); err != nil {
+				return err
+			}
+
 		}
-	}()
-	return c.port
+	}
+	return pivo.ErrShouldNotReachThis
+}
+
+// TextMessage formats a text message and returns a pointer to it.
+func (c *Conn) TextMessage(text string) *pivo.Message {
+	return pivo.TextMessage(c, text)
 }
 
 // Upgrade tries to upgrade an HTTP request to a Websocket session.

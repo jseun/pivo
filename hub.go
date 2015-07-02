@@ -7,7 +7,6 @@ package pivo
 import (
 	"errors"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -33,26 +32,22 @@ const IsBinaryMessage = 1
 // Marker for text message type
 const IsTextMessage = 0
 
-// Error is thrown when disconnecting the connectors from the
-// hub have raised some errors.
-var ErrHubFlushErrors = errors.New("errors while flushing")
-
 // Error is thrown when the join queue is full.
 var ErrJoinQueueIsFull = errors.New("join queue is full")
-
-// Error is thrown when a connection is not connected to the hub.
-var ErrNoSuchConnector = errors.New("no such connector")
 
 // Error is thrown when a connector has its port buffer full.
 var ErrPortBufferIsFull = errors.New("port buffer is full")
 
+// Error is thrown when unexpected code path is reached.
+var ErrShouldNotReachThis = errors.New("should not reach this")
+
 // Connector is the interface that wraps the basic methods needed
-// to send and receive the messages to and from a socket.
+// to use a connector with the hub.
 type Connector interface {
 	Close(error) error
-	Receiver(OnBinaryReader, OnTextReader, OnCloser) error
+	Protocol() string
 	RemoteAddr() net.Addr
-	Sender() Port
+	Send(*Message) error
 }
 
 // OnBinaryReader is called when binary data is read from
@@ -62,8 +57,8 @@ type OnBinaryReader interface {
 }
 
 // OnBinaryReadCloser is the interface that wraps basic methods
-// both for reading binary data and getting notified of a closing
-// connector.
+// both for reading binary data and getting notified about a
+// closed connection.
 type OnBinaryReadCloser interface {
 	OnBinaryReader
 	OnCloser
@@ -73,14 +68,6 @@ type OnBinaryReadCloser interface {
 // disconnection of a connector.
 type OnCloser interface {
 	OnClose(error) error
-}
-
-// OnJoiner is the interface that requires a method to call upon
-// attempt to join the hub.  Implementation will get the connector
-// as argument.  Any error returned will prevent the join to complete
-// and a message, if not nil, will be sent to all connected connectors.
-type OnJoiner interface {
-	OnJoin(Connector, Port) (*Message, error)
 }
 
 // OnReader is the interface that wraps the methods called when
@@ -104,73 +91,92 @@ type OnTextReader interface {
 }
 
 // OnTextReadCloser is the interface that wraps basic methods
-// both for reading text data and getting notified of a closing
-// connector.
+// both for reading text data and getting notified about a
+// closed connection.
 type OnTextReadCloser interface {
 	OnTextReader
 	OnCloser
 }
 
-// A Broadcast represents a channel for sending messages
-// to all instance of connectors on the hub.
-type Broadcast struct {
-	C Port
-}
-
 // A Hub is a collection of connectors with some specified settings.
 type Hub struct {
-	// Joiner is the implementor of the OnJoiner interface.
-	Joiner OnJoiner
-
 	// The interval at which new connections are processed.
 	// A Duration of time.Second / 100 would mean hundred
 	// of new connections are processed in a second.
 	JoinLimitRateInterval time.Duration
 
-	// The size of the burst allowed when the join limit
-	// interval is reached. A value of 10 would mean that
-	// 10 more new connections may stop waiting to join
-	// the hub,
+	// The size of the burst allowed when the join rate limit
+	// is reached. A value of 10 would mean that 10 extra
+	// connections may wait to join the hub.
 	JoinLimitRateBurst uint
 
 	// The maximum number of new connections waiting to
 	// join the hub before ErrJoinQueueIsFull is being
-	// returned.
+	// thrown.
 	JoinMaxQueueSize uint
 
-	bc      *Broadcast     // Hub's own broadcast channel
-	lock    *sync.Mutex    // Connectors lock
-	ports   Ports          // Map of connected connectors
-	qslot   chan bool      // Join burst channel
-	queue   chan chan bool // The join queue
-	running bool           // Hub is running or not
+	broadcast Port           // Broadcast channel
+	join      chan Connector // Join the connector
+	leave     chan Connector // Disjoin the connector
+	ports     Ports          // Map of connected connectors
+	stop      chan bool      // Stop the hub
+	timeslots chan bool      // Join burst timeslots
 }
 
-// Message is a data structure containing both the type of data
-// and the data itself.
+// OnHubBroadcaster is triggered before the message is delivered.
+// Callee may alter the message in any way as well as
+// provide a different list of recipients ports.
+// If error is thrown, broadcast will not occur at all.
+type OnHubBroadcaster interface {
+	OnHubBroadcast(*Message) (Ports, error)
+}
+
+// OnHubJoiner is triggered before a connector may join the hub.
+// If error is thrown, join will not occur at all.
+type OnHubJoiner interface {
+	OnHubJoin(Connector) error
+}
+
+// OnHubLeaver is triggered before a connector disjoin the hub.
+// Nothing may prevent this from happening at this stage.
+type OnHubLeaver interface {
+	OnHubLeave(Connector)
+}
+
+// OnHubCloser is triggered right before the hub stops.
+// The map of connected connectors is provided and is
+// guaranteed to be accurate at the time the callee has it.
+type OnHubCloser interface {
+	OnHubClose(Ports)
+}
+
+// Message is a data structure with bytes of data, type of data,
+// and its original connector.
 type Message struct {
-	Data []byte
-	Type int
+	Data []byte    // Bytes of data
+	From Connector // Original connector
+	Type int       // Type of data
 }
 
 // Port is a channel transporting a pointer to a Message.
 type Port chan *Message
 
-// Ports is a map of Port indexed by Connector.
-type Ports map[Connector]Port
+// Ports is a map of Connectors that have joined the hub.
+type Ports map[Connector]bool
 
+// throttler is the timeslots ticker.
 type throttler struct {
-	stop chan bool
+	stop chan bool // Stop the throttler
 }
 
 // BinaryMessage formats a binary message and returns
 // a pointer to it.
-func BinaryMessage(bin []byte) *Message {
-	return &Message{Data: bin, Type: IsBinaryMessage}
+func BinaryMessage(from Connector, bin []byte) *Message {
+	return &Message{bin, from, IsBinaryMessage}
 }
 
-// NewHub instantiate a new hub with default settings.
-func NewHub() *Hub {
+// DefaultHub instantiate a new hub with default settings.
+func DefaultHub() *Hub {
 	return &Hub{
 		JoinLimitRateBurst:    DefaultJoinLimitRateBurst,
 		JoinLimitRateInterval: DefaultJoinLimitRateInterval,
@@ -180,56 +186,24 @@ func NewHub() *Hub {
 
 // TextMessage formats a text message and returns
 // a pointer to it.
-func TextMessage(text string) *Message {
-	return &Message{Data: []byte(text), Type: IsTextMessage}
+func TextMessage(from Connector, text string) *Message {
+	return &Message{[]byte(text), from, IsTextMessage}
 }
 
-func (b *Broadcast) broadcast(h *Hub) {
-	for msg := range b.C {
-		h.lock.Lock()
-		for c, port := range h.ports {
-			select {
-			case port <- msg:
-			default:
-				err := ErrPortBufferIsFull
-				go h.Leave(c, err)
-			}
-		}
-		h.lock.Unlock()
-	}
-}
-
-// Close should be called when a broadcast channel is no longer
-// used.  Both the created channel and goroutine will be taken down.
-func (b *Broadcast) Close() {
-	close(b.C)
-}
-
-func (h *Hub) run() {
-	h.running = true
-	throttler := h.throttler(h.JoinLimitRateInterval)
-	defer func() {
-		h.running = false
-		throttler.stop <- true
-	}()
-
-	for waiter := range h.queue {
-		waiter <- <-h.qslot
-	}
-}
-
+// throttler fills the timeslots channel at specified interval.
 func (h *Hub) throttler(rate time.Duration) *throttler {
 	throttler := &throttler{stop: make(chan bool)}
 	go func() {
+		h.timeslots = make(chan bool, h.JoinLimitRateBurst+1)
 		ticker := time.NewTicker(rate)
-		defer func() { ticker.Stop(); close(h.qslot) }()
+		defer func() { ticker.Stop(); close(h.timeslots) }()
 		for {
 			select {
 			case <-throttler.stop:
 				return
 			case <-ticker.C:
 				select {
-				case h.qslot <- true:
+				case h.timeslots <- true:
 				default:
 				}
 			}
@@ -238,123 +212,110 @@ func (h *Hub) throttler(rate time.Duration) *throttler {
 	return throttler
 }
 
-func (h *Hub) waitQueue() error {
-	waiter := make(chan bool)
-	defer close(waiter)
+// Broadcast sends a message to all connectors on the hub.
+func (h *Hub) Broadcast(m *Message) { h.broadcast <- m }
 
+// Leave disjoins the given connector from the hub.
+func (h *Hub) Leave(c Connector) { h.leave <- c }
+
+// Stop brings the hub down.
+func (h *Hub) Stop() { h.stop <- true }
+
+// Join adds the given connector to the hub.
+func (h *Hub) Join(c Connector) error {
 	select {
-	case h.queue <- waiter:
+	case h.join <- c:
 	default:
 		return ErrJoinQueueIsFull
 	}
-	<-waiter
 	return nil
 }
 
-// Flush disconnects all connectors from the hub without actually
-// stopping it.
-func (h *Hub) Flush(reason error) (error, []error) {
-	h.lock.Lock()
-	defer h.lock.Unlock()
-	var errors []error
-	for c := range h.ports {
-		if err := c.Close(reason); err != nil {
-			errors = append(errors, err)
-		}
+// StartAndServe serves the hub until Stop() is requested.
+func (h *Hub) StartAndServe(trigger interface{}) error {
+	var throttler *throttler
+
+	// Start a throttler if necessary
+	if h.JoinLimitRateInterval > 0 {
+		throttler = h.throttler(h.JoinLimitRateInterval)
+		defer func() { throttler.stop <- true }()
 	}
 
-	if len(errors) > 0 {
-		return ErrHubFlushErrors, errors
-	}
-	return nil, nil
-}
+	// Initialize control channels
+	h.broadcast = make(Port)
+	h.join = make(chan Connector, h.JoinMaxQueueSize)
+	h.leave = make(chan Connector)
+	h.stop = make(chan bool)
 
-// Join adds the given connector to the hub.  If a joiner is
-// specified, it is given a chance to send data to the peer
-// (although reading is not allowed at this stage).  The joiner
-// may also choose to not allow the connector to join the hub.
-//
-// The connector's goroutine for receiving and sending messages will
-// automatically be started and the given OnReadCloser will get
-// notified either if there is data available to read or if the
-// connector has been closed.  At this stage, reading from the
-// socket is allowed.
-//
-// The caller needs not to worry about disconnecting the connector
-// from the hub if remote has closed the connection.  This is done
-// and handled by default.
-func (h *Hub) Join(c Connector, rc OnReadCloser) error {
-	if err := h.waitQueue(); err != nil {
-		c.Close(err)
-		return err
-	}
+	// Initialize ports map
+	h.ports = Ports{}
 
-	// Get a port to send data to
-	port := c.Sender()
-	if h.Joiner != nil {
-		msg, err := h.Joiner.OnJoin(c, port)
-		if err != nil {
-			// Joiner chose to deny access to the hub
-			c.Close(err)
-			if msg != nil {
-				// Broadcast notice to others
-				h.bc.C <- msg
+	// Loop until Stop()
+	for {
+		select {
+
+		// Broadcast
+		case msg := <-h.broadcast:
+			var recipients = h.ports
+
+			// OnHubBroadcaster event trigger
+			if t, ok := trigger.(OnHubBroadcaster); ok {
+				ports, err := t.OnHubBroadcast(msg)
+				if err != nil {
+					continue
+				} else if ports != nil {
+					recipients = ports
+				}
 			}
-			return err
+
+			// Send message to the recipients
+			for conn, _ := range recipients {
+				if msg.From == conn {
+					// Skip original connector
+					continue
+				} else if err := conn.Send(msg); err != nil {
+					conn.Close(err)
+					delete(h.ports, conn)
+					// OnHubLeaver event trigger
+					if t, ok := trigger.(OnHubLeaver); ok {
+						t.OnHubLeave(conn)
+					}
+				}
+			}
+
+		// Join
+		case conn := <-h.join:
+			// Throttle
+			if throttler != nil {
+				<-h.timeslots
+			}
+
+			// OnHubJoiner event trigger
+			if t, ok := trigger.(OnHubJoiner); ok {
+				if t.OnHubJoin(conn) != nil {
+					continue
+				}
+			}
+
+			h.ports[conn] = true
+
+		// Leave
+		case conn := <-h.leave:
+			delete(h.ports, conn)
+			// OnHubLeaver event trigger
+			if t, ok := trigger.(OnHubLeaver); ok {
+				t.OnHubLeave(conn)
+			}
+
+		// Stop
+		case <-h.stop:
+			// OnHubCloser event trigger
+			if t, ok := trigger.(OnHubCloser); ok {
+				t.OnHubClose(h.ports)
+			}
+			return nil
+
 		}
 	}
-
-	h.lock.Lock()
-	h.ports[c] = port
-	h.lock.Unlock()
-	go func() { h.Leave(c, c.Receiver(rc, rc, rc)) }()
-	return nil
-}
-
-// Leave disconnects the given connector from the hub.
-// If reason is not nil, the remote end shall receive the reason.
-// It is up to the connector to deliver the reason by its own mean.
-func (h *Hub) Leave(c Connector, reason error) error {
-	h.lock.Lock()
-	defer h.lock.Unlock()
-	if port, ok := h.ports[c]; ok {
-		delete(h.ports, c)
-		close(port)
-		return c.Close(reason)
-	}
-	return ErrNoSuchConnector
-}
-
-// NewBroadcast gives the caller a new broadcast channel
-// and kicks off the goroutine responsible for delivering
-// broadcasted message to the connectors currently connected.
-func (h *Hub) NewBroadcast() *Broadcast {
-	bc := &Broadcast{C: make(Port)}
-	go bc.broadcast(h)
-	return bc
-}
-
-// Start instantiate the hub queues with current settings and
-// kicks off the goroutine responsible for throttling the join queue.
-func (h *Hub) Start() error {
-	if !h.running {
-		h.bc = h.NewBroadcast()
-		h.lock = &sync.Mutex{}
-		h.ports = make(Ports)
-		h.queue = make(chan chan bool, h.JoinMaxQueueSize)
-		h.qslot = make(chan bool, h.JoinLimitRateBurst)
-		go h.run()
-	}
-	return nil
-}
-
-// Stop closes the join queue and disconnect all connectors from
-// the hub.  The throttling goroutine will also go down.
-func (h *Hub) Stop(reason error) (error, []error) {
-	if h.running {
-		h.bc.Close()
-		close(h.queue)
-		return h.Flush(reason)
-	}
-	return nil, nil
+	return ErrShouldNotReachThis
 }

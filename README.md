@@ -1,18 +1,18 @@
 # Pivo's Hub of Sockets for Go
 
-*Pivo is Go package for broadcasting messages through a virtual hub*
+*Pivo is the Go package for hub of sockets.*
 
 ## Getting started
 
 ### Documentation
 
- * [API Reference](https://godoc.org/gopkg.in/pivo.v1)
+ * [API Reference](https://godoc.org/gopkg.in/pivo.v2)
 
 ### Installation
 
 Install the Pivo library using the following `go` command.
 ```
-$ go get gopkg.in/pivo.v1
+$ go get gopkg.in/pivo.v2
 ```
 
 #### Dependencies

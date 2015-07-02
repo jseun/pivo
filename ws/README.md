@@ -6,13 +6,13 @@
 
 ### Documentation
 
- * [API Reference](https://godoc.org/gopkg.in/pivo.v1/ws)
+ * [API Reference](https://godoc.org/gopkg.in/pivo.v2/ws)
 
 ### Installation
 
 Install the Pivo library using the following `go` command.
 ```
-$ go get gopkg.in/pivo.v1
+$ go get gopkg.in/pivo.v2
 ```
 
 #### Dependencies
