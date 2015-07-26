@@ -157,7 +157,6 @@ func (c *Conn) Receiver(rc pivo.OnReadCloser) error {
 
 		}
 	}
-	return pivo.ErrShouldNotReachThis
 }
 
 // RemoteAddr returns the IP address of the remote end.
@@ -203,7 +202,6 @@ func (c *Conn) Sender() error {
 
 		}
 	}
-	return pivo.ErrShouldNotReachThis
 }
 
 // TextMessage formats a text message and returns a pointer to it.

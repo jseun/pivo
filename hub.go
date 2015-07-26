@@ -38,9 +38,6 @@ var ErrJoinQueueIsFull = errors.New("join queue is full")
 // Error is thrown when a connector has its port buffer full.
 var ErrPortBufferIsFull = errors.New("port buffer is full")
 
-// Error is thrown when unexpected code path is reached.
-var ErrShouldNotReachThis = errors.New("should not reach this")
-
 // Connector is the interface that wraps the basic methods needed
 // to use a connector with the hub.
 type Connector interface {
@@ -317,5 +314,4 @@ func (h *Hub) StartAndServe(trigger interface{}) error {
 
 		}
 	}
-	return ErrShouldNotReachThis
 }
